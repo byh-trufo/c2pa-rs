@@ -50,6 +50,10 @@ pub struct CertificateInfo {
     /// TO REVIEW: What does this `bool` mean?
     pub revocation_status: Option<bool>,
 
+    /// [trufo] TSA certificate chain (PEM bytes, leaf first).
+    /// Extracted from the sigTst/sigTst2 header alongside cert_chain.
+    pub tsa_cert_chain: Vec<u8>,
+
     /// User attested time (iat) if present
     pub iat: Option<String>,
 }

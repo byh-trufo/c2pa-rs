@@ -22,9 +22,10 @@ use crate::{
         asn1::rfc3161::TstInfo,
         base64,
         cose::{
-            cert_chain_from_sign1, parse_cose_sign1, signing_alg_from_sign1,
-            signing_time_from_sign1, signing_time_from_sign1_async, validate_cose_tst_info,
-            validate_cose_tst_info_async, CertificateInfo, CertificateTrustPolicy, Verifier,
+            cert_chain_from_sign1, extract_tsa_cert_chain, parse_cose_sign1,
+            signing_alg_from_sign1, signing_time_from_sign1, signing_time_from_sign1_async,
+            validate_cose_tst_info, validate_cose_tst_info_async, CertificateInfo,
+            CertificateTrustPolicy, Verifier,
         },
         raw_signature::SigningAlg,
     },
@@ -231,12 +232,16 @@ pub(crate) fn get_signing_info(
         Err(e) => Err(e.into()),
     };
 
-    let certs = match sign1 {
-        Ok(s) => match cert_chain_from_sign1(&s) {
-            Ok(c) => dump_cert_chain(&c).unwrap_or_default(),
-            Err(_) => Vec::new(),
-        },
-        Err(_e) => Vec::new(),
+    let (certs, tsa_certs) = match sign1 {
+        Ok(s) => {
+            let certs = match cert_chain_from_sign1(&s) {
+                Ok(c) => dump_cert_chain(&c).unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            let tsa_certs = extract_tsa_cert_chain(&s);
+            (certs, tsa_certs)
+        }
+        Err(_e) => (Vec::new(), Vec::new()),
     };
 
     CertificateInfo {
@@ -245,6 +250,7 @@ pub(crate) fn get_signing_info(
         alg,
         validated: false,
         cert_chain: certs,
+        tsa_cert_chain: tsa_certs,
         cert_serial_number,
         revocation_status: None,
         iat: None,
