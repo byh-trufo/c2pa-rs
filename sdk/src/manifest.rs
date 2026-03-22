@@ -403,16 +403,16 @@ impl Manifest {
                 label: manifest_label.to_owned(),
             })?;
 
+        // [trufo] Parse CoseSign1 once; reused for signature bytes below
+        let cose_sign1 = claim.cose_sign1().ok();
+
         let mut manifest = Manifest {
             claim_generator: claim.claim_generator().map(|s| s.to_owned()),
             title: claim.title().map(|s| s.to_owned()),
             format: claim.format().map(|s| s.to_owned()),
             instance_id: claim.instance_id().to_owned(),
             label: Some(claim.label().to_owned()),
-            signature: claim
-                .cose_sign1()
-                .ok()
-                .map(|cose_sign1| cose_sign1.signature),
+            signature: cose_sign1.as_ref().map(|s| s.signature.clone()),
             claim_version: Some(claim.version().try_into()?),
             ..Default::default()
         };
@@ -675,6 +675,8 @@ impl Manifest {
                 cert_chain: String::from_utf8(signature_info.cert_chain)
                     .map_err(|_e| Error::CoseInvalidCert)?,
                 revocation_status: signature_info.revocation_status,
+                tsa_cert_chain: String::from_utf8(signature_info.tsa_cert_chain)
+                    .unwrap_or_default(),
             }),
             None => None,
         };
@@ -717,14 +719,28 @@ pub struct SignatureInfo {
     pub revocation_status: Option<bool>,
 
     /// The cert chain for this claim.
-    #[serde(skip)] // don't serialize this, let someone ask for it
+    /// [trufo] Changed from #[serde(skip)] so cert_chain appears in Reader JSON
+    /// for both the claim signer and CAWG identity assertions.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub cert_chain: String,
+
+    /// [trufo] TSA certificate chain as concatenated PEM (leaf first).
+    /// Extracted from the COSE sigTst header during manifest construction.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tsa_cert_chain: String,
 }
 
 impl SignatureInfo {
     // returns the cert chain for this signature
     pub fn cert_chain(&self) -> &str {
         &self.cert_chain
+    }
+
+    /// [trufo] Returns the TSA certificate chain as concatenated PEM.
+    pub fn tsa_cert_chain(&self) -> &str {
+        &self.tsa_cert_chain
     }
 }
 

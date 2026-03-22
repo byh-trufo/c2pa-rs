@@ -141,6 +141,8 @@ impl X509SignatureReport {
                 cert_chain: String::from_utf8(info.cert_info.cert_chain.to_vec())
                     .unwrap_or_default(),
                 revocation_status: info.cert_info.revocation_status,
+                tsa_cert_chain: String::from_utf8(info.cert_info.tsa_cert_chain.to_vec())
+                    .unwrap_or_default(),
             },
         }
     }

@@ -27,7 +27,7 @@ use crate::{
         raw_signature::{AsyncRawSigner, RawSigner},
         time_stamp::{
             verify_time_stamp, verify_time_stamp_async, ContentInfo, TimeStampError,
-            TimeStampResponse,
+            TimeStampResponse, signed_data_from_time_stamp_response,
         },
     },
     log_item,
@@ -325,4 +325,86 @@ pub fn timestamptoken_from_timestamprsp(ts: &[u8]) -> Result<Vec<u8>> {
     Ok(rasn::der::encode(&ci).map_err(|err| {
         CoseError::InternalError(format!("failed to encode timestamp token: {err:?}"))
     })?)
+}
+
+/// [trufo] Convert DER-encoded certificates to PEM format.
+/// Same implementation as dump_cert_chain in cose_validator.rs and verifier.rs.
+fn dump_cert_chain(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
+    use std::io::Write;
+
+    let mut writer = Vec::new();
+
+    let line_len = 64;
+    let cert_begin = "-----BEGIN CERTIFICATE-----";
+    let cert_end = "-----END CERTIFICATE-----";
+
+    for der_bytes in certs {
+        let cert_base_str = crate::crypto::base64::encode(der_bytes);
+
+        let cert_lines = cert_base_str
+            .chars()
+            .collect::<Vec<char>>()
+            .chunks(line_len)
+            .map(|chunk| chunk.iter().collect::<String>())
+            .collect::<Vec<_>>();
+
+        writer
+            .write_fmt(format_args!("{cert_begin}\n"))
+            .map_err(|_e| crate::Error::UnsupportedType)?;
+        for l in cert_lines {
+            writer
+                .write_fmt(format_args!("{l}\n"))
+                .map_err(|_e| crate::Error::UnsupportedType)?;
+        }
+        writer
+            .write_fmt(format_args!("{cert_end}\n"))
+            .map_err(|_e| crate::Error::UnsupportedType)?;
+    }
+
+    Ok(writer)
+}
+
+/// [trufo] Extract the TSA certificate chain from a CoseSign1's sigTst/sigTst2
+/// header, returned as PEM bytes (leaf first, same format as dump_cert_chain).
+/// Returns an empty Vec if no timestamp or if parsing fails at any step.
+pub(crate) fn extract_tsa_cert_chain(sign1: &coset::CoseSign1) -> Vec<u8> {
+    let Some((sigtst_val, _tss)) = get_cose_tst_info(sign1) else {
+        return vec![];
+    };
+
+    let mut time_cbor = Vec::new();
+    if coset::cbor::into_writer(sigtst_val, &mut time_cbor).is_err() {
+        return vec![];
+    }
+
+    let tst_container: TstContainer = match coset::cbor::from_reader(time_cbor.as_slice()) {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+
+    let Some(token) = tst_container.tst_tokens.first() else {
+        return vec![];
+    };
+
+    let Ok(Some(sd)) = signed_data_from_time_stamp_response(&token.val) else {
+        return vec![];
+    };
+
+    let Some(certs) = &sd.certificates else {
+        return vec![];
+    };
+
+    let cert_ders: Vec<Vec<u8>> = certs
+        .to_vec()
+        .iter()
+        .filter_map(|cc| {
+            if let rasn_cms::CertificateChoices::Certificate(c) = cc {
+                rasn::der::encode(c).ok()
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    dump_cert_chain(&cert_ders).unwrap_or_default()
 }

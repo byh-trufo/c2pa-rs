@@ -23,9 +23,9 @@ use crate::{
         asn1::rfc3161::TstInfo,
         base64::encode,
         cose::{
-            cert_chain_from_sign1, check_end_entity_certificate_profile, parse_cose_sign1,
-            signing_alg_from_sign1, CertificateInfo, CertificateTrustPolicy, CoseError,
-            TrustAnchorType,
+            cert_chain_from_sign1, check_end_entity_certificate_profile, extract_tsa_cert_chain,
+            parse_cose_sign1, signing_alg_from_sign1, CertificateInfo, CertificateTrustPolicy,
+            CoseError, TrustAnchorType,
         },
         ec_utils::parse_ec_der_sig,
         raw_signature::{validator_for_signing_alg, SigningAlg},
@@ -165,6 +165,8 @@ impl Verifier<'_> {
             .map(|attr| attr.to_string())
             .map_err(|_| CoseError::MissingSigningCertificateChain)?;
 
+        let tsa_certs = extract_tsa_cert_chain(&sign1);
+
         Ok(CertificateInfo {
             alg: Some(alg),
             date: tst_info.map(|t| t.gen_time.clone().into()),
@@ -172,6 +174,7 @@ impl Verifier<'_> {
             issuer_org: Some(subject),
             validated: true,
             cert_chain: dump_cert_chain(&certs)?,
+            tsa_cert_chain: tsa_certs,
             revocation_status: Some(true),
             ..Default::default()
         })
