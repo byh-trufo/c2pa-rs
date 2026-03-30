@@ -131,6 +131,11 @@ pub struct Store {
     ctp: CertificateTrustPolicy,
     remote_url: Option<String>,
     embedded: bool,
+
+    /// [trufo] Dedicated trust pool for C2PA claim-signing anchors.
+    pub(crate) c2pa_ctp: CertificateTrustPolicy,
+    /// [trufo] Dedicated trust pool for CTSA timestamp anchors.
+    pub(crate) ctsa_ctp: CertificateTrustPolicy,
 }
 
 struct ManifestInfo<'a> {
@@ -156,6 +161,8 @@ impl Store {
             provenance_path: None,
             remote_url: None,
             embedded: false,
+            c2pa_ctp: CertificateTrustPolicy::default(),
+            ctsa_ctp: CertificateTrustPolicy::default(),
         }
     }
 
@@ -179,6 +186,18 @@ impl Store {
 
         if let Some(al) = &settings.trust.allowed_list {
             let _v = store.add_trust_allowed_list(al.as_bytes());
+        }
+
+        // [trufo] Load named trust pools for trust classification.
+        // These are separate from the main CTP used for verify_trust validation codes.
+        // Also combine into the main CTP so trust-based validation codes still work.
+        if let Some(c2pa_pem) = &settings.trust.c2pa_trust_anchors {
+            let _ = store.c2pa_ctp.add_trust_anchors(c2pa_pem.as_bytes());
+            let _ = store.add_trust(c2pa_pem.as_bytes());
+        }
+        if let Some(ctsa_pem) = &settings.trust.ctsa_trust_anchors {
+            let _ = store.ctsa_ctp.add_trust_anchors(ctsa_pem.as_bytes());
+            let _ = store.add_trust(ctsa_pem.as_bytes());
         }
 
         store

@@ -85,6 +85,14 @@ pub struct Trust {
     pub trust_config: Option<String>,
     /// List of explicitly allowed certificates as a PEM bundle.
     pub allowed_list: Option<String>,
+
+    /// [trufo] C2PA-specific trust anchors as a PEM bundle.
+    /// Used to build a dedicated CertificateTrustPolicy for trust classification.
+    pub c2pa_trust_anchors: Option<String>,
+
+    /// [trufo] CTSA-specific trust anchors as a PEM bundle.
+    /// Used to build a dedicated CertificateTrustPolicy for trust classification.
+    pub ctsa_trust_anchors: Option<String>,
 }
 
 impl Trust {
@@ -152,6 +160,8 @@ impl Default for Trust {
                 trust_anchors: None,
                 trust_config: None,
                 allowed_list: None,
+                c2pa_trust_anchors: None,
+                ctsa_trust_anchors: None,
             };
 
             trust.trust_config = Some(
@@ -177,6 +187,8 @@ impl Default for Trust {
                 trust_anchors: None,
                 trust_config: None,
                 allowed_list: None,
+                c2pa_trust_anchors: None,
+                ctsa_trust_anchors: None,
             }
         }
     }
@@ -194,6 +206,14 @@ impl SettingsValidate for Trust {
 
         if let Some(al) = &self.allowed_list {
             self.test_load_trust(al.as_bytes())?;
+        }
+
+        if let Some(ca) = &self.c2pa_trust_anchors {
+            self.test_load_trust(ca.as_bytes())?;
+        }
+
+        if let Some(ct) = &self.ctsa_trust_anchors {
+            self.test_load_trust(ct.as_bytes())?;
         }
 
         Ok(())
@@ -1382,12 +1402,12 @@ pub mod tests {
 
         // Verify it has trust anchors (test fixture includes multiple root CAs)
         assert!(
-            settings.trust.trust_anchors.is_some(),
-            "test_settings should include trust anchors"
+            settings.trust.c2pa_trust_anchors.is_some(),
+            "test_settings should include c2pa_trust_anchors"
         );
         assert!(
-            !settings.trust.trust_anchors.as_ref().unwrap().is_empty(),
-            "test_settings trust_anchors should not be empty"
+            !settings.trust.c2pa_trust_anchors.as_ref().unwrap().is_empty(),
+            "test_settings c2pa_trust_anchors should not be empty"
         );
 
         // Verify it has a signer configured
