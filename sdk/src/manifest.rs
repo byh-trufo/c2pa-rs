@@ -694,18 +694,68 @@ impl Manifest {
         };
 
         manifest.signature_info = match si {
-            Some(signature_info) => Some(SignatureInfo {
-                alg: signature_info.alg,
-                issuer: signature_info.issuer_org,
-                common_name: signature_info.common_name,
-                time: signature_info.date.map(|d| d.to_rfc3339()),
-                cert_serial_number: signature_info.cert_serial_number.map(|s| s.to_string()),
-                cert_chain: String::from_utf8(signature_info.cert_chain)
-                    .map_err(|_e| Error::CoseInvalidCert)?,
-                revocation_status: signature_info.revocation_status,
-                tsa_cert_chain: String::from_utf8(signature_info.tsa_cert_chain)
-                    .unwrap_or_default(),
-            }),
+            Some(signature_info) => {
+                let cert_chain_pem = String::from_utf8(signature_info.cert_chain)
+                    .map_err(|_e| Error::CoseInvalidCert)?;
+                let tsa_cert_chain_pem =
+                    String::from_utf8(signature_info.tsa_cert_chain).unwrap_or_default();
+
+                // [trufo] Collect CAWG identity assertion cert chains for trust classification.
+                // cert_chain is populated only after async validation (X509SignatureReport);
+                // silently absent in the sync path, producing an empty list there.
+                let cawg_chains: Vec<(String, Vec<u8>)> = manifest
+                    .assertions
+                    .iter()
+                    .filter(|a| {
+                        let l = a.label();
+                        l == "cawg.identity" || l.starts_with("cawg.identity__")
+                    })
+                    .filter_map(|a| {
+                        let pem = a
+                            .value()
+                            .ok()?
+                            .get("signature_info")?
+                            .get("cert_chain")?
+                            .as_str()?;
+                        if pem.is_empty() {
+                            return None;
+                        }
+                        Some((a.label().to_string(), pem.as_bytes().to_vec()))
+                    })
+                    .collect();
+
+                // [trufo] Trust classification against named trust pools.
+                // Emit only when the caller has loaded trust anchors (i.e. via
+                // settings/context); omit entirely for unconfigured deployments
+                // to preserve backwards-compatible JSON output.
+                let has_named_pools = store.c2pa_ctp.trust_anchor_ders().next().is_some()
+                    || store.ctsa_ctp.trust_anchor_ders().next().is_some();
+                let trust = if has_named_pools {
+                    let signing_time_epoch = signature_info.date.map(|d| d.timestamp());
+                    Some(crate::crypto::cose::trust_classification::classify_trust(
+                        manifest_label,
+                        cert_chain_pem.as_bytes(),
+                        tsa_cert_chain_pem.as_bytes(),
+                        signing_time_epoch,
+                        &store.c2pa_ctp,
+                        &store.ctsa_ctp,
+                        &cawg_chains,
+                    ))
+                } else {
+                    None
+                };
+
+                Some(SignatureInfo {
+                    alg: signature_info.alg,
+                    issuer: signature_info.issuer_org,
+                    common_name: signature_info.common_name,
+                    time: signature_info.date.map(|d| d.to_rfc3339()),
+                    cert_serial_number: signature_info.cert_serial_number.map(|s| s.to_string()),
+                    cert_chain: cert_chain_pem,
+                    revocation_status: signature_info.revocation_status,
+                    trust,
+                })
+            }
             None => None,
         };
 
@@ -746,29 +796,20 @@ pub struct SignatureInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revocation_status: Option<bool>,
 
-    /// The cert chain for this claim.
-    /// [trufo] Changed from #[serde(skip)] so cert_chain appears in Reader JSON
-    /// for both the claim signer and CAWG identity assertions.
-    #[serde(default)]
-    #[serde(skip_serializing_if = "String::is_empty")]
+    /// The cert chain for this claim (internal use only).
+    #[serde(skip)]
     pub cert_chain: String,
 
-    /// [trufo] TSA certificate chain as concatenated PEM (leaf first).
-    /// Extracted from the COSE sigTst header during manifest construction.
-    #[serde(default)]
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub tsa_cert_chain: String,
+    /// [trufo] Trust classification for this manifest's signing, TSA, and CAWG certs.
+    /// Only populated when named trust pools are configured in settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust: Option<crate::crypto::cose::trust_classification::TrustClassification>,
 }
 
 impl SignatureInfo {
     // returns the cert chain for this signature
     pub fn cert_chain(&self) -> &str {
         &self.cert_chain
-    }
-
-    /// [trufo] Returns the TSA certificate chain as concatenated PEM.
-    pub fn tsa_cert_chain(&self) -> &str {
-        &self.tsa_cert_chain
     }
 }
 

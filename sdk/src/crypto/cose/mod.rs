@@ -54,5 +54,7 @@ pub(crate) use sigtst::{
 mod time_stamp_storage;
 pub use time_stamp_storage::TimeStampStorage;
 
+pub mod trust_classification;
+
 mod verifier;
 pub use verifier::Verifier;
