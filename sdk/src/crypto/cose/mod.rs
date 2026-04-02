@@ -46,8 +46,9 @@ pub use sign1::{
 
 mod sigtst;
 pub(crate) use sigtst::{
-    add_sigtst_header, add_sigtst_header_async, extract_tsa_cert_chain, get_cose_tst_info,
-    timestamp_token_bytes_from_sign1, timestamptoken_from_timestamprsp, validate_cose_tst_info,
+    add_sigtst_header, add_sigtst_header_async, dump_cert_chain, extract_tsa_cert_chain,
+    get_cose_tst_info, timestamp_token_bytes_from_sign1, timestamptoken_from_timestamprsp,
+    validate_cose_tst_info,
     validate_cose_tst_info_async,
 };
 

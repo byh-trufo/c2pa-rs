@@ -14,6 +14,7 @@
 use std::{borrow::Cow, slice::Iter, sync::Arc};
 
 use async_generic::async_generic;
+use coset::TaggedCborSerializable;
 use log::debug;
 #[cfg(feature = "json_schema")]
 use schemars::JsonSchema;
@@ -34,8 +35,9 @@ use crate::{
     jumbf::labels::{
         manifest_label_from_uri, to_absolute_uri, to_assertion_uri, ASSERTIONS, DATABOXES,
     },
-    manifest_assertion::ManifestAssertion,
-    resource_store::{ResourceRef, ResourceStore, StoreResolver},
+    manifest_assertion::{ManifestAssertion, ManifestData},
+    resource_store::{mime_from_uri, ResourceRef, ResourceStore, StoreResolver},
+    settings::Settings,
     status_tracker::StatusTracker,
     store::Store,
     ClaimGeneratorInfo, Context, ManifestAssertionKind,
@@ -533,6 +535,10 @@ impl Manifest {
 
         let decode_identity_assertions = context.settings().core.decode_identity_assertions;
 
+        // [trufo] Collect CAWG identity assertion cert chains during the assertion
+        // loop (before serialization strips them). Used for trust classification.
+        let mut cawg_chains: Vec<(String, Vec<u8>)> = Vec::new();
+
         for assertion in claim.assertions() {
             let claim_assertion = match store
                 .get_claim_assertion_from_uri(&to_absolute_uri(claim.label(), &assertion.url()))
@@ -613,14 +619,16 @@ impl Manifest {
                     let assertion_metadata = AssertionMetadata::from_assertion(assertion)?;
                     let manifest_assertion =
                         ManifestAssertion::from_assertion(&assertion_metadata)?
-                            .set_instance(claim_assertion.instance());
+                            .set_instance(claim_assertion.instance())
+                            .set_created(created);
                     manifest.assertions.push(manifest_assertion);
                 } // all other labels that end in .metadata are Metadata assertions
                 label if label.ends_with(".metadata") => {
                     let metadata = Metadata::from_assertion(assertion)?;
                     let manifest_assertion = ManifestAssertion::from_assertion(&metadata)?
                         .set_kind(ManifestAssertionKind::Json)
-                        .set_instance(claim_assertion.instance());
+                        .set_instance(claim_assertion.instance())
+                        .set_created(created);
                     manifest.assertions.push(manifest_assertion);
                 }
                 label
@@ -629,7 +637,23 @@ impl Manifest {
                 {
                     let value = assertion.as_json_object()?;
                     let mut ma = ManifestAssertion::new(label.to_string(), value)
-                        .set_instance(claim_assertion.instance());
+                        .set_instance(claim_assertion.instance())
+                        .set_created(created);
+
+                    // [trufo] Extract cert chain from COSE signature before
+                    // validation serializes it away (cert_chain is serde(skip)).
+                    if let Ok(ia) = ma.to_assertion::<IdentityAssertion>() {
+                        match extract_cawg_cert_chain(&ia) {
+                            Ok(pem) => cawg_chains.push((label.to_string(), pem)),
+                            Err(e) => {
+                                debug!("failed to extract CAWG cert chain for {}: {}", label, e);
+                                cawg_chains.push((label.to_string(), Vec::new()));
+                            }
+                        }
+                    } else {
+                        debug!("failed to deserialize CAWG assertion for {}", label);
+                        cawg_chains.push((label.to_string(), Vec::new()));
+                    }
 
                     let mut partial_claim = PartialClaim::default();
                     for a in claim.assertions() {
@@ -650,9 +674,9 @@ impl Manifest {
                             .ok()
                     };
                     if let Some(v) = value {
-                        //debug!("cawg.identity validation returned: {v}");
                         ma = ManifestAssertion::new(label.to_string(), v)
-                            .set_instance(claim_assertion.instance());
+                            .set_instance(claim_assertion.instance())
+                            .set_created(created);
                     }
                     validation_log.pop_current_uri();
                     manifest.assertions.push(ma);
@@ -700,30 +724,6 @@ impl Manifest {
                 let tsa_cert_chain_pem =
                     String::from_utf8(signature_info.tsa_cert_chain).unwrap_or_default();
 
-                // [trufo] Collect CAWG identity assertion cert chains for trust classification.
-                // cert_chain is populated only after async validation (X509SignatureReport);
-                // silently absent in the sync path, producing an empty list there.
-                let cawg_chains: Vec<(String, Vec<u8>)> = manifest
-                    .assertions
-                    .iter()
-                    .filter(|a| {
-                        let l = a.label();
-                        l == "cawg.identity" || l.starts_with("cawg.identity__")
-                    })
-                    .filter_map(|a| {
-                        let pem = a
-                            .value()
-                            .ok()?
-                            .get("signature_info")?
-                            .get("cert_chain")?
-                            .as_str()?;
-                        if pem.is_empty() {
-                            return None;
-                        }
-                        Some((a.label().to_string(), pem.as_bytes().to_vec()))
-                    })
-                    .collect();
-
                 // [trufo] Trust classification against named trust pools.
                 // Emit only when the caller has loaded trust anchors (i.e. via
                 // settings/context); omit entirely for unconfigured deployments
@@ -732,15 +732,29 @@ impl Manifest {
                     || store.ctsa_ctp.trust_anchor_ders().next().is_some();
                 let trust = if has_named_pools {
                     let signing_time_epoch = signature_info.date.map(|d| d.timestamp());
-                    Some(crate::crypto::cose::trust_classification::classify_trust(
-                        manifest_label,
-                        cert_chain_pem.as_bytes(),
-                        tsa_cert_chain_pem.as_bytes(),
-                        signing_time_epoch,
-                        &store.c2pa_ctp,
-                        &store.ctsa_ctp,
-                        &cawg_chains,
-                    ))
+                    let (claim_trust, identity_trusts) =
+                        crate::crypto::cose::trust_classification::classify_trust(
+                            manifest_label,
+                            cert_chain_pem.as_bytes(),
+                            tsa_cert_chain_pem.as_bytes(),
+                            signing_time_epoch,
+                            &store.c2pa_ctp,
+                            &store.ctsa_ctp,
+                            &cawg_chains,
+                        );
+
+                    // [trufo] Inject per-identity trust into each CAWG assertion's
+                    // signature_info. The assertion JSON was already serialized by
+                    // X509SignatureReport, so we mutate the serde_json::Value.
+                    for (id_label, id_result) in &identity_trusts {
+                        inject_trust_into_assertion(
+                            &mut manifest.assertions,
+                            id_label,
+                            id_result,
+                        );
+                    }
+
+                    Some(claim_trust)
                 } else {
                     None
                 };
@@ -802,7 +816,7 @@ pub struct SignatureInfo {
 
     /// [trufo] Trust classification for this manifest's signing, TSA, and CAWG certs.
     /// Only populated when named trust pools are configured in settings.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "trust_info", skip_serializing_if = "Option::is_none")]
     pub trust: Option<crate::crypto::cose::trust_classification::TrustClassification>,
 }
 
@@ -810,6 +824,38 @@ impl SignatureInfo {
     // returns the cert chain for this signature
     pub fn cert_chain(&self) -> &str {
         &self.cert_chain
+    }
+}
+
+// [trufo] Helper: extract PEM cert chain from a CAWG identity assertion's COSE signature.
+fn extract_cawg_cert_chain(
+    identity_assertion: &crate::identity::IdentityAssertion,
+) -> Result<Vec<u8>> {
+    let sign1 = <coset::CoseSign1 as TaggedCborSerializable>::from_tagged_slice(
+        &identity_assertion.signature,
+    )
+    .map_err(|_| Error::CoseSignature)?;
+    let certs = crate::crypto::cose::cert_chain_from_sign1(&sign1)
+        .map_err(|_| Error::CoseInvalidCert)?;
+    crate::crypto::cose::dump_cert_chain(&certs).map_err(|_| Error::CoseInvalidCert)
+}
+
+// [trufo] Helper: inject a TrustResult into a CAWG assertion's signature_info JSON.
+fn inject_trust_into_assertion(
+    assertions: &mut [ManifestAssertion],
+    label: &str,
+    trust_result: &crate::crypto::cose::trust_classification::TrustResult,
+) {
+    for ma in assertions.iter_mut() {
+        if ma.label() == label {
+            if let ManifestData::Json(ref mut val) = ma.data {
+                if let Some(si) = val.get_mut("signature_info") {
+                    if let Ok(trust_val) = serde_json::to_value(trust_result) {
+                        si["trust_info"] = trust_val;
+                    }
+                }
+            }
+        }
     }
 }
 
