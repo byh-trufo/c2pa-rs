@@ -329,7 +329,7 @@ pub fn timestamptoken_from_timestamprsp(ts: &[u8]) -> Result<Vec<u8>> {
 
 /// [trufo] Convert DER-encoded certificates to PEM format.
 /// Same implementation as dump_cert_chain in cose_validator.rs and verifier.rs.
-fn dump_cert_chain(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
+pub(crate) fn dump_cert_chain(certs: &[Vec<u8>]) -> Result<Vec<u8>> {
     use std::io::Write;
 
     let mut writer = Vec::new();

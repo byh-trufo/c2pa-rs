@@ -30,6 +30,7 @@ pub const TRUST_C2PA_LEVEL_1: &str = "openprov.trust.c2pa.level-1";
 pub const TRUST_C2PA_INTERIM: &str = "openprov.trust.c2pa.interim";
 pub const TRUST_CAWG_INTERIM: &str = "openprov.trust.cawg.interim";
 pub const TRUST_UNKNOWN: &str = "openprov.trust.unknown";
+pub const TRUST_ERROR: &str = "openprov.trust.error";
 
 // --- Timestamp code constants ---
 
@@ -76,20 +77,15 @@ pub struct TrustResult {
     pub chain: Vec<ChainEntry>,
     /// Timestamp trust code (e.g. `openprov.timestamp.trusted`).
     pub timestamp: String,
+    /// Human-readable error message when trust is `openprov.trust.error`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-/// Trust classification for a single CAWG identity assertion.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "json_schema", derive(schemars::JsonSchema))]
-pub struct IdentityTrustEntry {
-    /// The assertion label (e.g. `cawg.identity` or `cawg.identity__2`).
-    pub label: String,
-    /// Trust classification for this identity assertion's signing chain.
-    #[serde(flatten)]
-    pub result: TrustResult,
-}
-
-/// Combined trust classification for a manifest.
+/// Trust classification for the C2PA claim, placed on the top-level SignatureInfo.
+///
+/// Per-CAWG-identity trust is injected into each assertion's own signature_info
+/// rather than being aggregated here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "json_schema", derive(schemars::JsonSchema))]
 pub struct TrustClassification {
@@ -97,9 +93,6 @@ pub struct TrustClassification {
     pub label: String,
     /// Trust classification for the C2PA claim-signing chain.
     pub claim: TrustResult,
-    /// Trust classification for each CAWG identity assertion (may be empty).
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub identities: Vec<IdentityTrustEntry>,
 }
 
 // --- Internal helpers ---
@@ -224,11 +217,13 @@ fn is_chain_trusted(
 /// Classify trust for the manifest's claim-signing and TSA certificate chains,
 /// plus all CAWG identity assertions.
 ///
-/// `manifest_label` is the manifest URN.
-/// `signing_chain_pem` and `tsa_chain_pem` are PEM-encoded cert chains
-/// (leaf first) as produced by c2pa-rs `dump_cert_chain`.
-/// `cawg_chains` is a slice of `(label, pem_bytes)` pairs, one per
-/// `cawg.identity` assertion found in the manifest.
+/// Classify trust for the manifest's claim-signing and TSA certificate chains,
+/// plus all CAWG identity assertions.
+///
+/// Returns `(claim_trust, per_identity_trust)`.
+/// - `claim_trust` goes on the top-level `SignatureInfo.trust_info`.
+/// - `per_identity_trust` is a vec of `(label, TrustResult)` pairs to be
+///   injected into each CAWG assertion's own `signature_info.trust_info`.
 pub fn classify_trust(
     manifest_label: &str,
     signing_chain_pem: &[u8],
@@ -237,7 +232,7 @@ pub fn classify_trust(
     c2pa_ctp: &CertificateTrustPolicy,
     ctsa_ctp: &CertificateTrustPolicy,
     cawg_chains: &[(String, Vec<u8>)],
-) -> TrustClassification {
+) -> (TrustClassification, Vec<(String, TrustResult)>) {
     let signing_chain_der = pem_to_der_chain(signing_chain_pem);
     let tsa_chain_der = pem_to_der_chain(tsa_chain_pem);
 
@@ -267,25 +262,37 @@ pub fn classify_trust(
             } else {
                 TRUST_UNKNOWN
             };
-            IdentityTrustEntry {
-                label: label.to_string(),
-                result: TrustResult {
+            (
+                label.to_string(),
+                TrustResult {
                     trust: trust.to_string(),
                     chain: build_chain_entries(&chain_der),
-                    // CAWG timestamps not yet classified
                     timestamp: TIMESTAMP_NONE.to_string(),
+                    error: None,
                 },
-            }
+            )
         })
         .collect();
 
-    TrustClassification {
+    let classification = TrustClassification {
         label: manifest_label.to_string(),
         claim: TrustResult {
             trust: c2pa_trust.to_string(),
             chain: build_chain_entries(&signing_chain_der),
             timestamp: tsa_trust.to_string(),
+            error: None,
         },
-        identities,
+    };
+
+    (classification, identities)
+}
+
+/// Create an error TrustResult for when chain extraction or classification fails.
+pub fn error_trust_result(msg: &str) -> TrustResult {
+    TrustResult {
+        trust: TRUST_ERROR.to_string(),
+        chain: Vec::new(),
+        timestamp: TIMESTAMP_NONE.to_string(),
+        error: Some(msg.to_string()),
     }
 }
