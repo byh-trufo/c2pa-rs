@@ -1422,7 +1422,7 @@ impl Claim {
                 .as_ref()
                 .and_then(|c| c.settings().builder.created_assertion_labels.as_ref())
             {
-                if created_assertions.iter().any(|label| label == base_label) {
+                if created_assertions.iter().any(|label| base_label.starts_with(label.as_str())) {
                     ClaimAssertionType::Created
                 } else {
                     ClaimAssertionType::Gathered

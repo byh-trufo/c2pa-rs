@@ -1440,7 +1440,8 @@ impl Builder {
                     )
                     .into()
                 };
-                // todo: add setting for created added thumbnails
+                // created_assertion_labels setting now handles thumbnail placement
+                // via prefix matching (e.g. "c2pa.thumbnail" matches "c2pa.thumbnail.claim")
                 add_assertion(&mut claim, &thumbnail, false)?;
             }
         }
