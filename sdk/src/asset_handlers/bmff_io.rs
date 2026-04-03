@@ -71,11 +71,10 @@ const FULL_BOX_TYPES: &[&str; 80] = &[
     "txtC", "mime", "uri ", "uriI", "hmhd", "sthd", "vvhd", "medc",
 ];
 
-static SUPPORTED_TYPES: [&str; 17] = [
+static SUPPORTED_TYPES: [&str; 15] = [
     "avif",
     "heif",
     "heic",
-    "jxl",
     "mp4",
     "m4a",
     "mov",
@@ -85,7 +84,6 @@ static SUPPORTED_TYPES: [&str; 17] = [
     "image/avif",
     "image/heic",
     "image/heif",
-    "image/jxl",
     "video/mp4",
     "video/quicktime",
     "video/x-m4v",
@@ -324,17 +322,6 @@ fn read_ftyp_box<R: Read + Seek + ?Sized>(reader: &mut R) -> Result<FileTypeBox>
     let header = BoxHeaderLite::read(reader)
         .map_err(|err| Error::InvalidAsset(format!("Bad BMFF {err}")))?;
 
-    // JXL containers have a 12-byte signature box ("JXL ") before ftyp; skip it
-    let (header, ftyp_start) = if header.name != BoxType::FtypBox && header.fourcc == "JXL " {
-        let jxl_end = start + header.size;
-        skip_bytes_to(reader, jxl_end)?;
-        let h = BoxHeaderLite::read(reader)
-            .map_err(|err| Error::InvalidAsset(format!("Bad BMFF {err}")))?;
-        (h, jxl_end)
-    } else {
-        (header, start)
-    };
-
     if header.name != BoxType::FtypBox {
         // when no ftyp is present ISOBMFF parsers typically treat the file as if it had an ftyp box with major_brand of 'mp41' and minor_version of 0, so we will do the same for our purposes
         return Ok(FileTypeBox {
@@ -362,7 +349,7 @@ fn read_ftyp_box<R: Read + Seek + ?Sized>(reader: &mut R) -> Result<FileTypeBox>
         brands.push(From::from(b));
     }
 
-    skip_bytes_to(reader, ftyp_start + size)?;
+    skip_bytes_to(reader, start + size)?;
 
     Ok(FileTypeBox {
         major_brand: From::from(major),
@@ -1784,33 +1771,19 @@ pub(crate) fn read_bmff_c2pa_boxes<R: Read + Seek + ?Sized>(
 
 impl CAIReader for BmffIO {
     fn read_cai(&self, reader: &mut dyn CAIRead) -> Result<Vec<u8>> {
-        // validate BMFF structure: first box must be ftyp, except for JXL
-        // containers which have a signature box ("JXL ") before ftyp
-        reader.rewind()?;
-
-        // read the first box header (size + fourcc)
-        let mut size_buf = [0u8; 4];
-        reader.read_exact(&mut size_buf)?;
-        let first_box_size = u32::from_be_bytes(size_buf) as u64;
+        reader.seek(SeekFrom::Start(4))?;
 
         let mut header = [0u8; 4];
         reader.read_exact(&mut header)?;
 
         if header[..4] != *b"ftyp" {
-            if &header[..4] == b"JXL " {
-                // skip past the JXL signature box using its declared size
-                reader.seek(SeekFrom::Start(first_box_size + 4))?;
-                reader.read_exact(&mut header)?;
+            return Err(BmffError::InvalidFileSignature {
+                reason: format!(
+                    "invalid BMFF structure: expected box type \"ftyp\" at offset 4, found {}",
+                    String::from_utf8_lossy(&header[..4])
+                ),
             }
-            if header[..4] != *b"ftyp" {
-                return Err(BmffError::InvalidFileSignature {
-                    reason: format!(
-                        "invalid BMFF structure: expected box type \"ftyp\", found {}",
-                        String::from_utf8_lossy(&header[..4])
-                    ),
-                }
-                .into());
-            }
+            .into());
         }
 
         let c2pa_boxes = read_bmff_c2pa_boxes(reader)?;
