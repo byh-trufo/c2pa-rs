@@ -134,6 +134,11 @@ pub struct Ingredient {
     #[serde(skip_serializing_if = "Option::is_none")]
     data_types: Option<Vec<AssetType>>,
 
+    /// Digital source type URI for ingredients without their own C2PA manifest.
+    /// Mutually exclusive with active_manifest per C2PA spec §18.16.12.
+    #[serde(rename = "digitalSourceType", skip_serializing_if = "Option::is_none")]
+    digital_source_type: Option<String>,
+
     /// A [`ManifestStore`] from the source asset extracted as a binary C2PA blob.
     ///
     /// [`ManifestStore`]: crate::ManifestStore
@@ -1135,6 +1140,7 @@ impl Ingredient {
             description: ingredient_assertion.description,
             informational_uri: ingredient_assertion.informational_uri,
             data_types: ingredient_assertion.data_types,
+            digital_source_type: ingredient_assertion.digital_source_type,
             label,
             ..Default::default()
         };
@@ -1504,6 +1510,9 @@ impl Ingredient {
             .informational_uri
             .clone_from(&self.informational_uri);
         ingredient_assertion.data_types.clone_from(&self.data_types);
+        ingredient_assertion
+            .digital_source_type
+            .clone_from(&self.digital_source_type);
         claim.add_assertion(&ingredient_assertion)
     }
 
@@ -1678,6 +1687,9 @@ impl Ingredient {
         }
         if let Some(label) = &other.label {
             self.label = Some(label.clone());
+        }
+        if let Some(dst) = &other.digital_source_type {
+            self.digital_source_type = Some(dst.clone());
         }
         //println!("after merge: {}", self);
     }
