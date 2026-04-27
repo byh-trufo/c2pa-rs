@@ -73,6 +73,8 @@ lazy_static! {
 lazy_static! {
     static ref CAI_WRITERS: HashMap<String, Box<dyn CAIWriter>> = {
         let handlers: Vec<Box<dyn AssetIO>> = vec![
+            #[cfg(feature = "pdf")]
+            Box::new(PdfIO::new("")),
             Box::new(BmffIO::new("")),
             Box::new(C2paIO::new("")),
             Box::new(JpegIO::new("")),

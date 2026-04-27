@@ -308,6 +308,37 @@ impl Pdf {
         Ok(Self { document })
     }
 
+    /// Replace bytes of an existing C2PA embedded-file stream in place.
+    ///
+    /// This keeps the PDF object graph stable (same object references) and only
+    /// updates the stream payload plus length metadata.
+    pub(crate) fn replace_manifest_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+        let file_spec_ref = self.c2pa_file_spec_object_id().ok_or(Error::NoManifest)?;
+
+        let file_stream_ef_ref = self
+            .document
+            .get_object(file_spec_ref)?
+            .as_dict()?
+            .get(b"EF")?;
+
+        let file_stream_ref = file_stream_ef_ref.as_dict()?.get(b"F")?.as_reference()?;
+        let stream = self.document.get_object_mut(file_stream_ref)?.as_stream_mut()?;
+
+        stream.content = bytes;
+        let len = stream.content.len() as i64;
+        stream.dict.set("Length", Integer(len));
+
+        if stream.dict.has(b"F") {
+            let embedded_file = stream.dict.get_mut(b"F")?;
+            let embedded_file_dict = embedded_file.as_dict_mut().map_err(|_| {
+                Error::UnableToReadPdf(lopdf::Error::Type)
+            })?;
+            embedded_file_dict.set("Length", Integer(len));
+        }
+
+        Ok(())
+    }
+
     /// Returns a reference to the Associated Files array from the PDF's Catalog.
     fn associated_files(&self) -> Result<&Vec<Object>, Error> {
         Ok(self
