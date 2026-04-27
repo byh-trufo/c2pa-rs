@@ -1,4 +1,4 @@
-// [trufo] Trust classification for openprov.
+// [trufo] Trust classification for trufo.
 //
 // Classifies signing and TSA certificate chains against named trust pools
 // and returns structured results with trust codes and chain metadata.
@@ -24,19 +24,19 @@ const EKU_DOCUMENT_SIGNING: &str = "1.3.6.1.5.5.7.3.36";
 
 // --- Trust code constants ---
 
-pub const TRUST_C2PA_LEVEL_2: &str = "openprov.trust.c2pa.level-2";
-pub const TRUST_C2PA_LEVEL_1: &str = "openprov.trust.c2pa.level-1";
+pub const TRUST_C2PA_LEVEL_2: &str = "trufo.trust.c2pa.level-2";
+pub const TRUST_C2PA_LEVEL_1: &str = "trufo.trust.c2pa.level-1";
 // dead code path for now — requires C2PA interim trust list
-pub const TRUST_C2PA_INTERIM: &str = "openprov.trust.c2pa.interim";
-pub const TRUST_CAWG_INTERIM: &str = "openprov.trust.cawg.interim";
-pub const TRUST_UNKNOWN: &str = "openprov.trust.unknown";
-pub const TRUST_ERROR: &str = "openprov.trust.error";
+pub const TRUST_C2PA_INTERIM: &str = "trufo.trust.c2pa.interim";
+pub const TRUST_CAWG_INTERIM: &str = "trufo.trust.cawg.interim";
+pub const TRUST_UNKNOWN: &str = "trufo.trust.unknown";
+pub const TRUST_ERROR: &str = "trufo.trust.error";
 
 // --- Timestamp code constants ---
 
-pub const TIMESTAMP_TRUSTED: &str = "openprov.timestamp.trusted";
-pub const TIMESTAMP_UNKNOWN: &str = "openprov.timestamp.unknown";
-pub const TIMESTAMP_NONE: &str = "openprov.timestamp.none";
+pub const TIMESTAMP_TRUSTED: &str = "trufo.timestamp.trusted";
+pub const TIMESTAMP_UNKNOWN: &str = "trufo.timestamp.unknown";
+pub const TIMESTAMP_NONE: &str = "trufo.timestamp.none";
 
 // --- Output structs ---
 
@@ -71,13 +71,13 @@ pub struct ChainEntry {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "json_schema", derive(schemars::JsonSchema))]
 pub struct TrustResult {
-    /// Main trust code (e.g. `openprov.trust.c2pa.level-2`).
+    /// Main trust code (e.g. `trufo.trust.c2pa.level-2`).
     pub trust: String,
     /// Certificate chain metadata (leaf to root).
     pub chain: Vec<ChainEntry>,
-    /// Timestamp trust code (e.g. `openprov.timestamp.trusted`).
+    /// Timestamp trust code (e.g. `trufo.timestamp.trusted`).
     pub timestamp: String,
-    /// Human-readable error message when trust is `openprov.trust.error`.
+    /// Human-readable error message when trust is `trufo.trust.error`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
