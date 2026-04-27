@@ -24,12 +24,14 @@ use crate::{
     error::{Error, Result},
 };
 
-static SUPPORTED_TYPES: [&str; 5] = [
+static SUPPORTED_TYPES: [&str; 7] = [
     "mp3",
     "audio/mpeg",
     "audio/mp3",
     "audio/x-mp3",
     "audio/mpeg3",
+    "aac",
+    "audio/aac",
 ];
 
 // ── MP3-specific ID3 header reader ──────────────────────────────────────────
