@@ -499,6 +499,8 @@ pub fn get_ocsp_der(sign1: &coset::CoseSign1) -> Option<Vec<u8>> {
     };
 
     // Find OCSP value if available.
+    // TODO(trufo): signing can emit multiple rVals.ocspVals entries, but this
+    // validation path currently checks only the first stapled response.
     rvals_map.iter().find_map(|x: &(Value, Value)| {
         if x.0 == Value::Text("ocspVals".to_string()) {
             x.1.as_array()
