@@ -199,6 +199,10 @@ impl RawSigner for SignerWrapper<'_> {
     fn ocsp_response(&self) -> Option<Vec<u8>> {
         self.0.ocsp_val()
     }
+
+    fn ocsp_responses(&self) -> Vec<Vec<u8>> {
+        self.0.ocsp_vals()
+    }
 }
 
 impl TimeStampProvider for SignerWrapper<'_> {
@@ -250,6 +254,10 @@ impl AsyncRawSigner for AsyncSignerWrapper<'_> {
 
     async fn ocsp_response(&self) -> Option<Vec<u8>> {
         self.0.ocsp_val().await
+    }
+
+    async fn ocsp_responses(&self) -> Vec<Vec<u8>> {
+        self.0.ocsp_vals().await
     }
 }
 
