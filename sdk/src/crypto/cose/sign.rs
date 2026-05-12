@@ -444,17 +444,15 @@ fn build_unprotected_header(
     };
 
     // Set the OCSP responder response if available.
-    let ocsp_val = if _sync {
-        signer.ocsp_response()
+    let ocsp_vals = if _sync {
+        signer.ocsp_responses()
     } else {
-        signer.ocsp_response().await
+        signer.ocsp_responses().await
     };
 
-    if let Some(ocsp) = ocsp_val {
-        let mut ocsp_vec: Vec<Value> = Vec::new();
+    if !ocsp_vals.is_empty() {
         let mut r_vals: Vec<(Value, Value)> = vec![];
-
-        ocsp_vec.push(Value::Bytes(ocsp));
+        let ocsp_vec: Vec<Value> = ocsp_vals.into_iter().map(Value::Bytes).collect();
         r_vals.push((Value::Text("ocspVals".to_string()), Value::Array(ocsp_vec)));
 
         unprotected_h = unprotected_h.text_value("rVals".to_string(), Value::Map(r_vals));

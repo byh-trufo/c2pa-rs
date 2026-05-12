@@ -54,6 +54,15 @@ pub trait RawSigner: TimeStampProvider {
     fn ocsp_response(&self) -> Option<Vec<u8>> {
         None
     }
+
+    /// Return OCSP responses for the signing certificate chain if available.
+    ///
+    /// Responses should be ordered consistently with the certificate chain.
+    /// The default implementation preserves backwards compatibility by
+    /// wrapping [`Self::ocsp_response`] into a one-element vector.
+    fn ocsp_responses(&self) -> Vec<Vec<u8>> {
+        self.ocsp_response().into_iter().collect()
+    }
 }
 
 /// Implementations of the `AsyncRawSigner` trait generate a cryptographic
@@ -89,6 +98,15 @@ pub trait AsyncRawSigner: AsyncTimeStampProvider + MaybeSync + MaybeSend {
     /// recommended by the C2PA spec.
     async fn ocsp_response(&self) -> Option<Vec<u8>> {
         None
+    }
+
+    /// Return OCSP responses for the signing certificate chain if available.
+    ///
+    /// Responses should be ordered consistently with the certificate chain.
+    /// The default implementation preserves backwards compatibility by
+    /// wrapping [`Self::ocsp_response`] into a one-element vector.
+    async fn ocsp_responses(&self) -> Vec<Vec<u8>> {
+        self.ocsp_response().await.into_iter().collect()
     }
 }
 
@@ -250,6 +268,10 @@ impl AsyncRawSigner for AsyncRawSignerWrapper {
 
     async fn ocsp_response(&self) -> Option<Vec<u8>> {
         self.0.ocsp_response()
+    }
+
+    async fn ocsp_responses(&self) -> Vec<Vec<u8>> {
+        self.0.ocsp_responses()
     }
 }
 

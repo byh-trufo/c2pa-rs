@@ -115,6 +115,11 @@ pub trait Signer {
         None
     }
 
+    /// OCSP responses for the signing certificate chain if available.
+    fn ocsp_vals(&self) -> Vec<Vec<u8>> {
+        self.ocsp_val().into_iter().collect()
+    }
+
     /// If this returns true the sign function is responsible for for direct handling of the COSE structure.
     ///
     /// This is useful for cases where the signer needs to handle the COSE structure directly.
@@ -247,6 +252,11 @@ pub trait AsyncSigner: MaybeSend + MaybeSync {
         None
     }
 
+    /// OCSP responses for the signing certificate chain if available.
+    async fn ocsp_vals(&self) -> Vec<Vec<u8>> {
+        self.ocsp_val().await.into_iter().collect()
+    }
+
     /// If this returns true the sign function is responsible for for direct handling of the COSE structure.
     ///
     /// This is useful for cases where the signer needs to handle the COSE structure directly.
@@ -299,6 +309,10 @@ impl<T: ?Sized + Signer> Signer for Box<T> {
         (**self).ocsp_val()
     }
 
+    fn ocsp_vals(&self) -> Vec<Vec<u8>> {
+        (**self).ocsp_vals()
+    }
+
     fn direct_cose_handling(&self) -> bool {
         (**self).direct_cose_handling()
     }
@@ -346,8 +360,11 @@ impl RawSigner for Box<dyn Signer> {
     }
 
     fn ocsp_response(&self) -> Option<Vec<u8>> {
-        eprintln!("HUH, A DIFFERENT I WANTED @ 397");
         self.as_ref().ocsp_val()
+    }
+
+    fn ocsp_responses(&self) -> Vec<Vec<u8>> {
+        self.as_ref().ocsp_vals()
     }
 }
 
@@ -418,6 +435,10 @@ impl<T: ?Sized + AsyncSigner> AsyncSigner for Box<T> {
         (**self).ocsp_val().await
     }
 
+    async fn ocsp_vals(&self) -> Vec<Vec<u8>> {
+        (**self).ocsp_vals().await
+    }
+
     fn direct_cose_handling(&self) -> bool {
         (**self).direct_cose_handling()
     }
@@ -453,6 +474,10 @@ impl Signer for RawSignerWrapper {
 
     fn ocsp_val(&self) -> Option<Vec<u8>> {
         self.0.ocsp_response()
+    }
+
+    fn ocsp_vals(&self) -> Vec<Vec<u8>> {
+        self.0.ocsp_responses()
     }
 
     fn time_authority_url(&self) -> Option<String> {
