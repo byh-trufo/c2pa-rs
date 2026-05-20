@@ -322,7 +322,10 @@ impl Pdf {
             .get(b"EF")?;
 
         let file_stream_ref = file_stream_ef_ref.as_dict()?.get(b"F")?.as_reference()?;
-        let stream = self.document.get_object_mut(file_stream_ref)?.as_stream_mut()?;
+        let stream = self
+            .document
+            .get_object_mut(file_stream_ref)?
+            .as_stream_mut()?;
 
         stream.content = bytes;
         let len = stream.content.len() as i64;
@@ -331,7 +334,10 @@ impl Pdf {
         if stream.dict.has(b"F") {
             let embedded_file = stream.dict.get_mut(b"F")?;
             let embedded_file_dict = embedded_file.as_dict_mut().map_err(|_| {
-                Error::UnableToReadPdf(lopdf::Error::Type)
+                Error::UnableToReadPdf(lopdf::Error::ObjectType {
+                    expected: "Dictionary",
+                    found: "Other",
+                })
             })?;
             embedded_file_dict.set("Length", Integer(len));
         }
