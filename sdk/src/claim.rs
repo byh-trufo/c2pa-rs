@@ -1354,7 +1354,18 @@ impl Claim {
         &mut self,
         assertion_builder: &impl AssertionBase,
     ) -> Result<C2PAAssertion> {
-        self.add_assertion_impl(assertion_builder, &DefaultSalt::default(), false)
+        self.add_assertion_impl(assertion_builder, &DefaultSalt::default(), None)
+    }
+
+    /// Same as add_assertion but with an explicit created/gathered placement
+    /// override for Claims V2: Some(true) forces created_assertions, Some(false)
+    /// forces gathered_assertions, None uses the created_assertion_labels setting.
+    pub(crate) fn add_assertion_with_placement(
+        &mut self,
+        assertion_builder: &impl AssertionBase,
+        placement_override: Option<bool>,
+    ) -> Result<C2PAAssertion> {
+        self.add_assertion_impl(assertion_builder, &DefaultSalt::default(), placement_override)
     }
 
     /// Same as add_assertion but forces addition to created_assertions for Claims V2
@@ -1362,7 +1373,7 @@ impl Claim {
         &mut self,
         assertion_builder: &impl AssertionBase,
     ) -> Result<C2PAAssertion> {
-        self.add_assertion_impl(assertion_builder, &DefaultSalt::default(), true)
+        self.add_assertion_impl(assertion_builder, &DefaultSalt::default(), Some(true))
     }
 
     fn compatibility_checks(&self, assertion: &Assertion) -> Result<()> {
@@ -1412,11 +1423,14 @@ impl Claim {
     fn claim_assertion_type(
         &self,
         base_label: &str,
-        add_as_created_assertion: bool,
+        placement_override: Option<bool>,
     ) -> ClaimAssertionType {
         if self.version() > 1 {
-            if labels::HASH_LABELS.contains(&base_label) || add_as_created_assertion {
+            // hash labels are always created regardless of any override
+            if labels::HASH_LABELS.contains(&base_label) || placement_override == Some(true) {
                 ClaimAssertionType::Created
+            } else if placement_override == Some(false) {
+                ClaimAssertionType::Gathered
             } else if let Some(created_assertions) = self
                 .context
                 .as_ref()
@@ -1441,7 +1455,7 @@ impl Claim {
         &mut self,
         assertion_builder: &impl AssertionBase,
         salt_generator: &impl SaltGenerator,
-        add_as_created_assertion: bool,
+        placement_override: Option<bool>,
     ) -> Result<C2PAAssertion> {
         // Enforce the per-manifest assertion limit to prevent resource exhaustion
         // regardless of how the claim is constructed.
@@ -1480,7 +1494,7 @@ impl Claim {
         c2pa_assertion.add_salt(salt.clone());
 
         // find the ClaimAssertionType and add to gathered or created lists if needed
-        let assertion_type = self.claim_assertion_type(base_label, add_as_created_assertion);
+        let assertion_type = self.claim_assertion_type(base_label, placement_override);
 
         match assertion_type {
             ClaimAssertionType::Created => {
@@ -4367,4 +4381,30 @@ pub mod tests {
             "instance 1 should be gone"
         );
     }
+
+    #[test]
+    fn test_claim_assertion_type_tri_state() {
+        let claim = Claim::new("placement_test", Some("vendor"), 2);
+
+        // explicit overrides win in both directions
+        assert_eq!(
+            claim.claim_assertion_type("c2pa.ingredient.v3", Some(true)),
+            ClaimAssertionType::Created
+        );
+        assert_eq!(
+            claim.claim_assertion_type("c2pa.ingredient.v3", Some(false)),
+            ClaimAssertionType::Gathered
+        );
+        // hash labels are always created, even against a gathered override
+        assert_eq!(
+            claim.claim_assertion_type("c2pa.hash.data", Some(false)),
+            ClaimAssertionType::Created
+        );
+        // None defers to the created_assertion_labels setting (unset here)
+        assert_eq!(
+            claim.claim_assertion_type("c2pa.ingredient.v3", None),
+            ClaimAssertionType::Gathered
+        );
+    }
+
 }

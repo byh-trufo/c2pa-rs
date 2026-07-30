@@ -143,6 +143,12 @@ pub struct Ingredient {
     #[serde(rename = "digitalSourceType", skip_serializing_if = "Option::is_none")]
     digital_source_type: Option<String>,
 
+    /// Claim-list placement override for this ingredient's assertion (Claims V2):
+    /// Some(true) forces created_assertions, Some(false) forces
+    /// gathered_assertions, None uses the created_assertion_labels setting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created: Option<bool>,
+
     /// A [`ManifestStore`] from the source asset extracted as a binary C2PA blob.
     ///
     /// [`ManifestStore`]: crate::ManifestStore
@@ -398,6 +404,11 @@ impl Ingredient {
         self.digital_source_type.as_deref()
     }
 
+    /// Returns the claim-list placement override, if set.
+    pub fn created(&self) -> Option<bool> {
+        self.created
+    }
+
     /// Returns an list AssetType info.
     pub fn data_types(&self) -> Option<&[AssetType]> {
         self.data_types.as_deref()
@@ -584,6 +595,14 @@ impl Ingredient {
     /// [`DigitalSourceType`]: crate::assertions::DigitalSourceType
     pub fn set_digital_source_type<S: ToString>(&mut self, dst: S) -> &mut Self {
         self.digital_source_type = Some(dst.to_string());
+        self
+    }
+
+    /// Sets the claim-list placement for this ingredient's assertion (Claims
+    /// V2): true places it in created_assertions, false in gathered_assertions.
+    /// Unset, the created_assertion_labels setting decides.
+    pub fn set_created(&mut self, created: bool) -> &mut Self {
+        self.created = Some(created);
         self
     }
 
@@ -1411,7 +1430,7 @@ impl Ingredient {
         ingredient_assertion
             .digital_source_type
             .clone_from(&self.digital_source_type);
-        claim.add_assertion(&ingredient_assertion)
+        claim.add_assertion_with_placement(&ingredient_assertion, self.created)
     }
 
     /// Asynchronously create an Ingredient from a binary manifest (.c2pa) and asset bytes,
