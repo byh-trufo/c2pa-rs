@@ -1173,6 +1173,9 @@ pub mod tests {
             claim_signature: Some(HashedUri::new("self#jumbf=c2pa/urn:c2pa:5E7B01FC-4932-4BAB-AB32-D4F12A8AA322/c2pa.signature".to_owned(), Some("sha256".to_owned()), &[1,2,3,4,5,6,7,8,9,0])),
             soft_bindings_matched: Some(true),
             soft_binding_algorithms_matched: Some(vec!["alg1".to_owned(), "alg2".to_owned()]),
+            // None because the initializer carries active_manifest, which is
+            // mutually exclusive with digitalSourceType (v2.4 18.16.12.3)
+            digital_source_type: None,
             version: 1,
         };
 

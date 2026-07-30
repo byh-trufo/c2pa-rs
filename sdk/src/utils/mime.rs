@@ -27,7 +27,6 @@ pub fn extension_to_mime(extension: &str) -> Option<&'static str> {
         "dng" => "image/x-adobe-dng",
         "heic" => "image/heic",
         "heif" => "image/heif",
-        "jxl" => "image/jxl",
         "mp2" | "mpa" | "mpe" | "mpeg" | "mpg" | "mpv2" => "video/mpeg",
         "mp4" => "video/mp4",
         "avi" => "video/avi",
