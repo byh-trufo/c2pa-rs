@@ -390,6 +390,14 @@ impl Ingredient {
         self.informational_uri.as_deref()
     }
 
+    /// Returns the digital source type URI, if set.
+    ///
+    /// Only meaningful for ingredients without their own C2PA manifest;
+    /// mutually exclusive with an active manifest per C2PA spec 18.16.12.
+    pub fn digital_source_type(&self) -> Option<&str> {
+        self.digital_source_type.as_deref()
+    }
+
     /// Returns an list AssetType info.
     pub fn data_types(&self) -> Option<&[AssetType]> {
         self.data_types.as_deref()
@@ -567,6 +575,15 @@ impl Ingredient {
     /// Sets an informational URI if needed.
     pub fn set_informational_uri<S: Into<String>>(&mut self, uri: S) -> &mut Self {
         self.informational_uri = Some(uri.into());
+        self
+    }
+
+    /// Sets the digital source type for an ingredient without its own C2PA
+    /// manifest. Accepts a [`DigitalSourceType`] or any displayable URI value.
+    ///
+    /// [`DigitalSourceType`]: crate::assertions::DigitalSourceType
+    pub fn set_digital_source_type<S: ToString>(&mut self, dst: S) -> &mut Self {
+        self.digital_source_type = Some(dst.to_string());
         self
     }
 
@@ -1734,6 +1751,11 @@ mod tests {
             "thumbnail".as_bytes().to_vec()
         );
         assert_eq!(ingredient.active_manifest(), Some("active_manifest"));
+        ingredient.set_digital_source_type(DigitalSourceType::TrainedAlgorithmicMedia);
+        assert_eq!(
+            ingredient.digital_source_type(),
+            Some(DigitalSourceType::TrainedAlgorithmicMedia.to_string().as_str())
+        );
 
         assert_eq!(
             ingredient.validation_status().unwrap()[0].code(),

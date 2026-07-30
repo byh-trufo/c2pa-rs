@@ -1262,6 +1262,42 @@ pub mod tests {
     }
 
     #[test]
+    fn test_digital_source_type_in_ingredient() {
+        // v3 round-trip with digital_source_type (no active_manifest)
+        let ingredient = Ingredient {
+            title: Some("test_title".to_owned()),
+            format: Some("image/jpeg".to_owned()),
+            instance_id: Some("67890".to_owned()),
+            relationship: Relationship::ParentOf,
+            digital_source_type: Some(
+                "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia".to_owned(),
+            ),
+            version: 3,
+            ..Default::default()
+        };
+
+        let assertion = ingredient.to_assertion().expect("to_assertion");
+        let decoded = Ingredient::from_assertion(&assertion).expect("from_assertion");
+        assert_eq!(decoded, ingredient);
+
+        // digital_source_type + active_manifest is mutually exclusive
+        let bad = Ingredient {
+            digital_source_type: Some(
+                "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia".to_owned(),
+            ),
+            active_manifest: Some(HashedUri::new(
+                "self#jumbf=c2pa/urn:c2pa:TEST".to_owned(),
+                Some("sha256".to_owned()),
+                &[1, 2, 3],
+            )),
+            validation_results: Some(ValidationResults::default()),
+            version: 3,
+            ..Default::default()
+        };
+        assert!(bad.to_assertion().is_err());
+    }
+
+    #[test]
     fn test_from_stream() {
         use std::io::Cursor;
 
