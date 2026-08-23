@@ -1420,7 +1420,7 @@ impl Claim {
 
     /// Determine if an assertion should be added as a created or gathered assertion
     /// for Claims V2 and later
-    fn claim_assertion_type(
+    pub(crate) fn claim_assertion_type(
         &self,
         base_label: &str,
         placement_override: Option<bool>,

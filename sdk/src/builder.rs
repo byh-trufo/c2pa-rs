@@ -45,7 +45,7 @@ use crate::{
         DigitalSourceType, EmbeddedData, ExclusionsMap, MerkleMap, Metadata, SoftwareAgent,
         SubsetMap, Thumbnail, TimeStamp, User, UserCbor,
     },
-    claim::Claim,
+    claim::{Claim, ClaimAssertionType},
     context::{Context, ProgressPhase},
     crypto::cose,
     error::{Error, Result},
@@ -63,6 +63,26 @@ use crate::{
     AsyncSigner, ClaimGeneratorInfo, EphemeralSigner, HashRange, HashedUri, Ingredient,
     ManifestAssertionKind, Reader, Relationship, Signer,
 };
+
+/// [trufo] Claim-build-scoped state for arena-aware auto-action generation.
+///
+/// Spans every actions assertion processed by one `to_claim` so that at most
+/// one inception action exists (created arena only) and each componentOf
+/// ingredient receives exactly one `c2pa.placed` action, emitted into an
+/// actions assertion whose claim-list arena matches the ingredient's own.
+#[derive(Default)]
+struct AutoActionsState {
+    /// resolved claim-list arena per ingredient assertion url
+    ingredient_arenas: HashMap<String, ClaimAssertionType>,
+    /// an inception action (c2pa.created/c2pa.opened) exists or was added
+    inception_added: bool,
+    /// a declared actions assertion resolves to the created arena; when none
+    /// does (default settings route everything gathered), the inception keeps
+    /// its pre-arena behavior of landing in the first actions assertion
+    has_created_actions: bool,
+    /// ingredient urls already referenced by any c2pa.placed action
+    placed_refs: HashSet<String>,
+}
 
 /// Label for the `archive:type` field in working-store archive metadata.
 const ARCHIVE_TYPE: &str = "archive:type";
@@ -1658,6 +1678,8 @@ impl Builder {
         // add all ingredients to the claim
         // We use a map to track the ingredient IDs and their hashed URIs
         let mut ingredient_map = HashMap::new();
+        // [trufo] arena-aware auto-action state spanning all actions assertions
+        let mut auto_state = AutoActionsState::default();
 
         for ingredient in &definition.ingredients {
             // use the label if it exists and is not empty, otherwise use the instance_id
@@ -1671,9 +1693,16 @@ impl Builder {
                 &self.context,
             )?;
             if !id.is_empty() {
+                // [trufo] record the resolved claim-list arena exactly as
+                // Ingredient::add_to_claim resolved it (same label, same override)
+                auto_state.ingredient_arenas.insert(
+                    uri.url(),
+                    claim.claim_assertion_type(labels::INGREDIENT, ingredient.created()),
+                );
                 ingredient_map.insert(id, (ingredient.relationship(), uri));
             }
         }
+        self.seed_auto_actions_state(&claim, &ingredient_map, &mut auto_state)?;
 
         // Verify all requested redactions were applied to some ingredient
         if let Some(redactions) = &definition.redactions {
@@ -1774,7 +1803,20 @@ impl Builder {
 
                     // Do this at the end of the preprocessing step to ensure all ingredient references
                     // are resolved to their hashed URIs.
-                    self.add_actions_assertion_settings(&ingredient_map, &mut actions)?;
+                    // [trufo] resolve this assertion's claim-list arena exactly as
+                    // add_assertion below will (created flag forces created, else
+                    // label-driven), so auto-actions are arena-aware
+                    let arena = if manifest_assertion.created() {
+                        ClaimAssertionType::Created
+                    } else {
+                        claim.claim_assertion_type(match_label, None)
+                    };
+                    self.add_actions_assertion_settings(
+                        &ingredient_map,
+                        &mut actions,
+                        arena,
+                        &mut auto_state,
+                    )?;
 
                     add_assertion(&mut claim, &actions, manifest_assertion.created())
                 }
@@ -1823,7 +1865,15 @@ impl Builder {
 
         if !found_actions {
             let mut actions = Actions::new();
-            self.add_actions_assertion_settings(&ingredient_map, &mut actions)?;
+            // [trufo] the fallback assertion's arena is label-driven, same as
+            // the add_assertion call below
+            let arena = claim.claim_assertion_type(Actions::LABEL, None);
+            self.add_actions_assertion_settings(
+                &ingredient_map,
+                &mut actions,
+                arena,
+                &mut auto_state,
+            )?;
 
             if !actions.actions().is_empty() {
                 // todo: add setting for created added actions
@@ -1831,7 +1881,105 @@ impl Builder {
             }
         }
 
+        // [trufo] spec 18.16: every componentOf ingredient requires a
+        // c2pa.placed action; any not yet covered (its arena had no matching
+        // actions assertion) is emitted into a synthesized actions assertion
+        // of the ingredient's own claim-list arena
+        if self
+            .context
+            .settings()
+            .builder
+            .actions
+            .auto_placed_action
+            .enabled
+        {
+            for arena in [ClaimAssertionType::Created, ClaimAssertionType::Gathered] {
+                let mut synthesized = Actions::new();
+                for (relationship, uri) in ingredient_map.values() {
+                    if *relationship == &Relationship::ComponentOf
+                        && !auto_state.placed_refs.contains(&uri.url())
+                        && auto_state.ingredient_arenas.get(&uri.url()) == Some(&arena)
+                    {
+                        let action = Action::new(c2pa_action::PLACED)
+                            .set_parameter("ingredients", vec![uri])?;
+                        let action = match self
+                            .context
+                            .settings()
+                            .builder
+                            .actions
+                            .auto_placed_action
+                            .source_type
+                        {
+                            Some(ref source_type) => action.set_source_type(source_type.clone()),
+                            _ => action,
+                        };
+                        synthesized.actions.push(action);
+                        auto_state.placed_refs.insert(uri.url());
+                    }
+                }
+                if !synthesized.actions.is_empty() {
+                    claim.add_assertion_with_placement(
+                        &synthesized,
+                        Some(arena == ClaimAssertionType::Created),
+                    )?;
+                }
+            }
+        }
+
         Ok(claim)
+    }
+
+    /// [trufo] Seed auto-action state from the declared actions assertions.
+    ///
+    /// Records any declared inception action and every ingredient already
+    /// referenced by a declared `c2pa.placed` action (by hashed URI or by
+    /// `ingredientIds`, which to_claim resolves later), so auto-generation
+    /// neither duplicates an inception nor a placed action.
+    fn seed_auto_actions_state(
+        &self,
+        claim: &Claim,
+        ingredient_map: &HashMap<String, (&Relationship, HashedUri)>,
+        state: &mut AutoActionsState,
+    ) -> Result<()> {
+        for manifest_assertion in &self.definition.assertions {
+            let (match_label, _version, _instance) = parse_label(manifest_assertion.label());
+            if !match_label.starts_with(Actions::LABEL) {
+                continue;
+            }
+            if manifest_assertion.created()
+                || claim.claim_assertion_type(match_label, None) == ClaimAssertionType::Created
+            {
+                state.has_created_actions = true;
+            }
+            let actions: Actions = manifest_assertion.to_assertion()?;
+            for action in actions.actions() {
+                if action.action() == c2pa_action::CREATED
+                    || action.action() == c2pa_action::OPENED
+                {
+                    state.inception_added = true;
+                }
+                if action.action() == c2pa_action::PLACED {
+                    if let Some(parameters) = &action.parameters {
+                        if let Some(ingredient_uris) = &parameters.ingredients {
+                            for uri in ingredient_uris {
+                                state.placed_refs.insert(uri.url());
+                            }
+                        }
+                    }
+                    // ingredientIds are resolved to hashed URIs later in
+                    // to_claim; record their target urls now for deduplication
+                    let mut action = action.clone();
+                    if let Some(ids) = action.extract_ingredient_ids() {
+                        for id in ids {
+                            if let Some((_relationship, uri)) = ingredient_map.get(&id) {
+                                state.placed_refs.insert(uri.url());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Adds [ActionsSettings][crate::settings::ActionsSettings] to an
@@ -1846,6 +1994,8 @@ impl Builder {
         &self,
         ingredient_map: &HashMap<String, (&Relationship, HashedUri)>,
         actions: &mut Actions,
+        arena: ClaimAssertionType,
+        state: &mut AutoActionsState,
     ) -> Result<()> {
         if actions.all_actions_included.is_none() {
             actions.all_actions_included =
@@ -1882,7 +2032,7 @@ impl Builder {
                 true => actions.actions = additional_actions,
             }
         }
-        self.add_auto_actions_assertions_settings(ingredient_map, actions)
+        self.add_auto_actions_assertions_settings(ingredient_map, actions, arena, state)
     }
 
     /// Adds c2pa.created, c2pa.opened, and c2pa.placed actions for the specified [Actions][crate::assertions::Actions]
@@ -1896,13 +2046,20 @@ impl Builder {
         &self,
         ingredient_map: &HashMap<String, (&Relationship, HashedUri)>,
         actions: &mut Actions,
+        arena: ClaimAssertionType,
+        state: &mut AutoActionsState,
     ) -> Result<()> {
         let settings = self.context.settings();
         // https://spec.c2pa.org/specifications/specifications/2.3/specs/C2PA_Specification.html#_mandatory_presence_of_at_least_one_actions_assertion
         let auto_created = settings.builder.actions.auto_created_action.enabled;
         let auto_opened = settings.builder.actions.auto_opened_action.enabled;
 
+        // [trufo] the inception action belongs to the created-arena actions
+        // assertion when one exists, and at most one may exist across all
+        // actions assertions
         if (self.intent().is_some() || auto_created || auto_opened)
+            && (!state.has_created_actions || arena == ClaimAssertionType::Created)
+            && !state.inception_added
             && !actions.actions.iter().any(|action| {
                 action.action() == c2pa_action::CREATED || action.action() == c2pa_action::OPENED
             })
@@ -1968,29 +2125,23 @@ impl Builder {
             // we know there are no other created or opened actions, so we can safely insert at the front
             if let Some(action) = action {
                 actions.actions.insert(0, action);
+                state.inception_added = true;
             }
         }
 
         // https://spec.c2pa.org/specifications/specifications/2.3/specs/C2PA_Specification.html#_relationship
+        // [trufo] a componentOf ingredient without an associated "c2pa.placed"
+        // action receives one here, in the actions assertion whose claim-list
+        // arena matches the ingredient's; declared and previously generated
+        // placed references are tracked in the shared state
         if settings.builder.actions.auto_placed_action.enabled {
-            // Get a list of ingredient URIs referenced by "c2pa.placed" actions.
-            let mut referenced_uris = HashSet::new();
-            for action in &actions.actions {
-                if action.action() == "c2pa.placed" {
-                    if let Some(parameters) = &action.parameters {
-                        if let Some(ingredient_uris) = &parameters.ingredients {
-                            for uri in ingredient_uris {
-                                referenced_uris.insert(uri.url());
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If a "ComponentOf" ingredient doesn't have an associated "c2pa.placed" action, create it here.
             for (relationship, uri) in ingredient_map.values() {
                 if *relationship == &Relationship::ComponentOf
-                    && !referenced_uris.contains(&uri.url())
+                    && !state.placed_refs.contains(&uri.url())
+                    && state
+                        .ingredient_arenas
+                        .get(&uri.url())
+                        .map_or(true, |ingredient_arena| *ingredient_arena == arena)
                 {
                     let action = Action::new(c2pa_action::PLACED);
 
@@ -2001,6 +2152,7 @@ impl Builder {
                         _ => action,
                     };
                     actions.actions.push(action);
+                    state.placed_refs.insert(uri.url());
                 }
             }
         }
