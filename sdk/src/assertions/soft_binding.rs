@@ -77,7 +77,8 @@ pub struct SoftBindingBlock {
     pub scope: SoftBindingScope,
 
     /// In algorithm specific format, the value of the soft binding computed over this block of digital content.
-    pub value: String,
+    #[serde(default, with = "serde_bytes")]
+    pub value: Vec<u8>,
 }
 
 /// Soft binding scope, specifying specifically where in an asset the soft binding is applicable.
@@ -92,14 +93,14 @@ pub struct SoftBindingScope {
     pub region: Option<RegionOfInterest>,
 
     #[serde(skip_serializing)]
-    extent: Option<String>,
+    extent: Option<serde_bytes::ByteBuf>,
 }
 
 impl SoftBindingScope {
     /// In algorithm specific format, the part of the digital content over which the soft binding value has been computed.
     #[deprecated = "deprecated in c2pa v2.1, use the `region` field instead"]
-    pub fn extent(&self) -> Option<&str> {
-        self.extent.as_deref()
+    pub fn extent(&self) -> Option<&[u8]> {
+        self.extent.as_ref().map(|b| b.as_slice())
     }
 }
 
