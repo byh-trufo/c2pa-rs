@@ -1,3 +1,4 @@
+// Modified by Trufo Inc. from the upstream C2PA SDK.
 // [trufo] Per-ingredient claim-list placement and file-less ingredients.
 
 mod common;

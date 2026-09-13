@@ -1,3 +1,4 @@
+// Modified by Trufo Inc. from the upstream C2PA SDK.
 // Copyright 2022 Adobe. All rights reserved.
 // This file is licensed to you under the Apache License,
 // or the MIT license (http://opensource.org/licenses/MIT),

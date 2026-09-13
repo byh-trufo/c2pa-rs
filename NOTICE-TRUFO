@@ -1,0 +1,42 @@
+This tree includes modifications by Trufo Inc. to the upstream C2PA SDK.
+Upstream comparison base: 6db983b96d7826027d9df33c1d128f96b84c8973
+
+Modified Rust source files:
+sdk/src/assertions/actions.rs
+sdk/src/assertions/bmff_hash.rs
+sdk/src/assertions/ingredient.rs
+sdk/src/assertions/soft_binding.rs
+sdk/src/asset_handlers/id3_helper.rs
+sdk/src/asset_handlers/mp3_io.rs
+sdk/src/asset_handlers/pdf.rs
+sdk/src/asset_handlers/pdf_io.rs
+sdk/src/asset_handlers/tiff_io.rs
+sdk/src/builder.rs
+sdk/src/claim.rs
+sdk/src/cose_sign.rs
+sdk/src/cose_validator.rs
+sdk/src/crjson.rs
+sdk/src/crypto/cose/certificate_info.rs
+sdk/src/crypto/cose/mod.rs
+sdk/src/crypto/cose/ocsp.rs
+sdk/src/crypto/cose/sign.rs
+sdk/src/crypto/cose/sigtst.rs
+sdk/src/crypto/cose/trust_classification.rs
+sdk/src/crypto/cose/verifier.rs
+sdk/src/crypto/raw_signature/signer.rs
+sdk/src/crypto/time_stamp/mod.rs
+sdk/src/identity/claim_aggregation/w3c_vc/did_web.rs
+sdk/src/identity/x509/x509_signature_verifier.rs
+sdk/src/ingredient.rs
+sdk/src/jumbf/labels.rs
+sdk/src/manifest.rs
+sdk/src/resource_store.rs
+sdk/src/settings/mod.rs
+sdk/src/signer.rs
+sdk/src/store.rs
+sdk/src/utils/mime.rs
+sdk/tests/crjson/hash_assertions.rs
+sdk/tests/crjson/schema_compliance.rs
+sdk/tests/test_ingredient_placement.rs
+
+Existing upstream copyright and license notices are preserved.

@@ -1,3 +1,4 @@
+// Modified by Trufo Inc. from the upstream C2PA SDK.
 // [trufo] Trust classification for trufo.
 //
 // Classifies signing and TSA certificate chains against named trust pools

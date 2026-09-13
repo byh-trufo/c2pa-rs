@@ -1,3 +1,4 @@
+// Modified by Trufo Inc. from the upstream C2PA SDK.
 use serde::{Deserialize, Serialize};
 
 use super::labels;
