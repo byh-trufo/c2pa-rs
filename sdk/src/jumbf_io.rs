@@ -400,12 +400,8 @@ pub mod tests {
         handler.remove_c2pa(&mut writer, &mut removed).unwrap();
         removed.set_position(0);
         let result = load_jumbf_from_stream(asset_type, &mut removed);
-        if (asset_type != "wav")
-            && (asset_type != "avi" && asset_type != "mp3" && asset_type != "webp")
-        {
-            assert!(matches!(&result.err().unwrap(), Error::JumbfNotFound));
-        }
-        //assert!(matches!(result.err().unwrap(), Error::JumbfNotFound));
+        assert!(matches!(&result.err().unwrap(), Error::JumbfNotFound));
+        assert!(!removed.get_ref().windows(jumbf.len()).any(|w| w == jumbf));
     }
 
     fn test_remote_ref(asset_type: &str, reader: &mut dyn ReadSeek) {
