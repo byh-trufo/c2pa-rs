@@ -2334,6 +2334,19 @@ fn add_required_tags_to_stream(
     }
 }
 
+/// The C2PA tag's IFD entries in the order readers use them: the last page's, then the first
+/// page's when it is a different IFD, for backwards compatibility with older TIFFs.
+fn c2pa_ifd_entries(tiff_tree: &Arena<ImageFileDirectory>, page_tokens: &[Token]) -> Vec<IfdEntry> {
+    let last_page = page_tokens.last();
+    let first_page = page_tokens.first().filter(|_| page_tokens.len() > 1);
+
+    last_page
+        .into_iter()
+        .chain(first_page)
+        .filter_map(|page| tiff_tree[*page].data.get_tag(C2PA_TAG).copied())
+        .collect()
+}
+
 fn get_cai_data<R>(mut asset_reader: &mut R) -> Result<Vec<u8>>
 where
     R: Read + Seek + ?Sized,
@@ -2344,22 +2357,10 @@ where
     let e = mapped.endianness;
     let big_tiff = mapped.big_tiff;
 
-    let first_page = page_tokens
+    let cai_ifd_entry = c2pa_ifd_entries(&tiff_tree, &page_tokens)
         .first()
-        .ok_or(Error::InvalidAsset("no IFD".to_string()))?;
-    let last_page = page_tokens
-        .last()
-        .ok_or(Error::InvalidAsset("no IFD".to_string()))?;
-    let last_ifd = &tiff_tree[*last_page].data;
-
-    let cai_ifd_entry = match last_ifd.get_tag(C2PA_TAG) {
-        Some(entry) => entry,
-        None => {
-            // if the last page doesn't have the C2PA tag, check the first page for backwards compatibility with older TIFFs
-            let first_ifd = &tiff_tree[*first_page].data;
-            first_ifd.get_tag(C2PA_TAG).ok_or(Error::JumbfNotFound)?
-        }
-    };
+        .copied()
+        .ok_or(Error::JumbfNotFound)?;
 
     // make sure data type is for unstructured data
     if cai_ifd_entry.entry_type != C2PA_FIELD_TYPE {
@@ -2520,22 +2521,15 @@ impl C2paWriter for TiffIO {
         let e = mapped.endianness;
         let big_tiff = mapped.big_tiff;
 
-        let first_page = page_tokens
-            .first()
-            .ok_or(Error::InvalidAsset("no IFD".to_string()))?;
         let last_page = page_tokens
             .last()
             .ok_or(Error::InvalidAsset("no IFD".to_string()))?;
         let last_page_ifd = &tiff_tree[*last_page].data;
 
-        let cai_ifd_entry = match last_page_ifd.get_tag(C2PA_TAG) {
-            Some(entry) => entry,
-            None => {
-                // if the last page doesn't have the C2PA tag, check the first page for backwards compatibility with older TIFFs
-                let first_ifd = &tiff_tree[*first_page].data;
-                first_ifd.get_tag(C2PA_TAG).ok_or(Error::JumbfNotFound)?
-            }
-        };
+        let cai_ifd_entry = c2pa_ifd_entries(&tiff_tree, &page_tokens)
+            .first()
+            .copied()
+            .ok_or(Error::JumbfNotFound)?;
 
         // make sure data type is for unstructured data
         if cai_ifd_entry.entry_type != C2PA_FIELD_TYPE {
@@ -2598,23 +2592,8 @@ impl C2paWriter for TiffIO {
         let e = mapped.endianness;
         let big_tiff = mapped.big_tiff;
 
-        let first_page = page_tokens
-            .first()
-            .ok_or(Error::InvalidAsset("no IFD found".to_string()))?;
-        let last_page = page_tokens
-            .last()
-            .ok_or(Error::InvalidAsset("no IFD found".to_string()))?;
-
         // the C2PA tag is in the last page, in the first page of older TIFFs, or in both
-        let mut c2pa_entries: Vec<IfdEntry> = tiff_tree[*last_page]
-            .data
-            .get_tag(C2PA_TAG)
-            .copied()
-            .into_iter()
-            .collect();
-        if first_page != last_page {
-            c2pa_entries.extend(tiff_tree[*first_page].data.get_tag(C2PA_TAG).copied());
-        }
+        let c2pa_entries = c2pa_ifd_entries(&tiff_tree, &page_tokens);
 
         // we remove tag if found and rewrite the file
         if !c2pa_entries.is_empty() {
@@ -3185,27 +3164,28 @@ pub mod tests {
         let store = b"c2pa manifest store".repeat(64);
         let tiff_io = TiffIO {};
 
+        // MultiPage.tif is a classic TIFF, so the next IFD offset is 4 bytes
+        let next_ifd_at = |mapped: &MappedTiff| {
+            mapped.tiff_tree[mapped.page_tokens[0]]
+                .data
+                .next_idf_offset_location as usize
+        };
+
         // older TIFFs have the C2PA tag in the first page of a multi-page TIFF: write it to the
         // first page alone, then link the other pages back in
         let mut source = std::fs::read(crate::utils::test::fixture_path("MultiPage.tif")).unwrap();
         let mapped = map_tiff(&mut Cursor::new(&source)).unwrap();
         let pages = mapped.page_tokens.len();
-        // MultiPage.tif is a classic TIFF, so the next IFD offset is 4 bytes
-        let next_ifd_at = mapped.tiff_tree[mapped.page_tokens[0]]
-            .data
-            .next_idf_offset_location as usize;
-        let next_ifd = source[next_ifd_at..next_ifd_at + 4].to_vec();
-        source[next_ifd_at..next_ifd_at + 4].fill(0);
+        let at = next_ifd_at(&mapped);
+        let next_ifd = source[at..at + 4].to_vec();
+        source[at..at + 4].fill(0);
 
         let mut legacy = Cursor::new(Vec::new());
         tiff_io
             .write_c2pa(&mut Cursor::new(source), &mut legacy, &store)
             .unwrap();
-        let mapped = map_tiff(&mut legacy).unwrap();
-        let next_ifd_at = mapped.tiff_tree[mapped.page_tokens[0]]
-            .data
-            .next_idf_offset_location as usize;
-        legacy.get_mut()[next_ifd_at..next_ifd_at + 4].copy_from_slice(&next_ifd);
+        let at = next_ifd_at(&map_tiff(&mut legacy).unwrap());
+        legacy.get_mut()[at..at + 4].copy_from_slice(&next_ifd);
         assert_eq!(tiff_io.read_c2pa(&mut legacy).unwrap(), store);
 
         let mut removed = Cursor::new(Vec::new());
