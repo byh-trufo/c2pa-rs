@@ -1341,11 +1341,15 @@ impl<T: Read + Write + Seek> TiffCloner<T> {
             }
         } else {
             // is this a manifest removal?
-            // remove the last IDF just by set a new last IFD if there is a C2PA tag in the remove list and we are not inserting to the first page
-            if remove_tiff_tags.contains(&C2PA_TAG) && !insert_to_first_page {
+            // remove the last IDF just by set a new last IFD if it holds a C2PA tag in the remove list and we are not inserting to the first page
+            if remove_tiff_tags.contains(&C2PA_TAG)
+                && !insert_to_first_page
+                && last_page_ifd.data.entries.contains_key(&C2PA_TAG)
+            {
                 let second_to_last = &page_tokens[page_tokens.len() - 2];
 
-                let second_to_last_ifd = tiff_tree
+                let second_to_last_ifd = mapped
+                    .tiff_tree
                     .get(*second_to_last)
                     .ok_or_else(|| Error::InvalidAsset("TIFF does not have IFD".to_string()))?;
 
@@ -2594,14 +2598,68 @@ impl C2paWriter for TiffIO {
         let e = mapped.endianness;
         let big_tiff = mapped.big_tiff;
 
+        let first_page = page_tokens
+            .first()
+            .ok_or(Error::InvalidAsset("no IFD found".to_string()))?;
         let last_page = page_tokens
             .last()
             .ok_or(Error::InvalidAsset("no IFD found".to_string()))?;
 
+        // the C2PA tag is in the last page, in the first page of older TIFFs, or in both
+        let mut c2pa_entries: Vec<IfdEntry> = tiff_tree[*last_page]
+            .data
+            .get_tag(C2PA_TAG)
+            .copied()
+            .into_iter()
+            .collect();
+        if first_page != last_page {
+            c2pa_entries.extend(tiff_tree[*first_page].data.get_tag(C2PA_TAG).copied());
+        }
+
         // we remove tag if found and rewrite the file
-        if tiff_tree[*last_page].data.entries.contains_key(&C2PA_TAG) {
+        if !c2pa_entries.is_empty() {
+            // rewrite from a copy of the input without the manifest stores
+            let mut source = Vec::new();
+            input_stream.rewind()?;
+            input_stream.read_to_end(&mut source)?;
+
+            // cut off the store that ends the file and zero any other in place so no other data
+            // moves, truncating last so the zeroed ranges stay valid
+            let data_bytes = if big_tiff { 8 } else { 4 };
+            let mut cut_at = source.len();
+            for c2pa_entry in c2pa_entries {
+                // make sure data type is for unstructured data
+                if c2pa_entry.entry_type != C2PA_FIELD_TYPE {
+                    return Err(Error::InvalidAsset(
+                        "Ifd entry for C2PA must be type UNDEFINED(7)".to_string(),
+                    ));
+                }
+
+                if c2pa_entry.value_count <= data_bytes {
+                    return Err(Error::InvalidAsset(
+                        "Ifd entry for C2PA is too small to be a manifest store".to_string(),
+                    ));
+                }
+
+                let store_start =
+                    usize::try_from(decode_offset(c2pa_entry.value_offset, e, big_tiff)?)?;
+                let store_len = usize::try_from(c2pa_entry.value_count)?;
+                let store_end = store_start
+                    .checked_add(store_len)
+                    .filter(|&end| end <= source.len())
+                    .ok_or_else(|| Error::InvalidAsset("TIFF/DNG out of range".to_string()))?;
+
+                if store_end == source.len() {
+                    cut_at = cut_at.min(store_start);
+                } else {
+                    source[store_start..store_end].fill(0);
+                }
+            }
+            source.truncate(cut_at);
+
             let mut bo = ByteOrdered::new(output_stream, e);
-            let mut tc = TiffCloner::new_from_source(e, big_tiff, &mut bo, input_stream)?;
+            let mut tc =
+                TiffCloner::new_from_source(e, big_tiff, &mut bo, &mut Cursor::new(source))?;
 
             tc.clone_c2pa_mode(
                 input_stream,
@@ -3090,6 +3148,102 @@ pub mod tests {
             Err(Error::JumbfNotFound) => (),
             _ => panic!("should be no C2PA store"),
         }
+    }
+
+    #[test]
+    fn test_remove_manifest_zeroes_store_before_trailing_data() {
+        let store = b"c2pa manifest store".repeat(64);
+        let trailer = b"trailing data";
+        let tiff_io = TiffIO {};
+
+        let mut input =
+            std::fs::File::open(crate::utils::test::fixture_path("TUSCANY.TIF")).unwrap();
+        let mut signed = Cursor::new(Vec::new());
+        tiff_io.write_c2pa(&mut input, &mut signed, &store).unwrap();
+        let store_start = signed.get_ref().len() - store.len();
+        let store_end = signed.get_ref().len();
+        signed.get_mut().extend_from_slice(trailer);
+
+        let mut removed = Cursor::new(Vec::new());
+        tiff_io.remove_c2pa(&mut signed, &mut removed).unwrap();
+
+        assert!(removed.get_ref()[store_start..store_end]
+            .iter()
+            .all(|b| *b == 0));
+        assert_eq!(
+            &removed.get_ref()[store_end..store_end + trailer.len()],
+            trailer
+        );
+        assert!(matches!(
+            tiff_io.read_c2pa(&mut removed),
+            Err(Error::JumbfNotFound)
+        ));
+    }
+
+    #[test]
+    fn test_remove_manifest_from_first_page_of_multipage() {
+        let store = b"c2pa manifest store".repeat(64);
+        let tiff_io = TiffIO {};
+
+        // older TIFFs have the C2PA tag in the first page of a multi-page TIFF: write it to the
+        // first page alone, then link the other pages back in
+        let mut source = std::fs::read(crate::utils::test::fixture_path("MultiPage.tif")).unwrap();
+        let mapped = map_tiff(&mut Cursor::new(&source)).unwrap();
+        let pages = mapped.page_tokens.len();
+        // MultiPage.tif is a classic TIFF, so the next IFD offset is 4 bytes
+        let next_ifd_at = mapped.tiff_tree[mapped.page_tokens[0]]
+            .data
+            .next_idf_offset_location as usize;
+        let next_ifd = source[next_ifd_at..next_ifd_at + 4].to_vec();
+        source[next_ifd_at..next_ifd_at + 4].fill(0);
+
+        let mut legacy = Cursor::new(Vec::new());
+        tiff_io
+            .write_c2pa(&mut Cursor::new(source), &mut legacy, &store)
+            .unwrap();
+        let mapped = map_tiff(&mut legacy).unwrap();
+        let next_ifd_at = mapped.tiff_tree[mapped.page_tokens[0]]
+            .data
+            .next_idf_offset_location as usize;
+        legacy.get_mut()[next_ifd_at..next_ifd_at + 4].copy_from_slice(&next_ifd);
+        assert_eq!(tiff_io.read_c2pa(&mut legacy).unwrap(), store);
+
+        let mut removed = Cursor::new(Vec::new());
+        tiff_io.remove_c2pa(&mut legacy, &mut removed).unwrap();
+
+        assert_eq!(map_tiff(&mut removed).unwrap().page_tokens.len(), pages);
+        assert!(!removed.get_ref().windows(store.len()).any(|w| w == store));
+        assert!(matches!(
+            tiff_io.read_c2pa(&mut removed),
+            Err(Error::JumbfNotFound)
+        ));
+
+        // re-signing keeps the old store in the first page and writes the new one in its own
+        // last IFD
+        let store_b = b"second manifest store".repeat(64);
+        let mut resigned = Cursor::new(Vec::new());
+        tiff_io
+            .write_c2pa(&mut legacy, &mut resigned, &store_b)
+            .unwrap();
+        let mapped = map_tiff(&mut resigned).unwrap();
+        for page in [mapped.page_tokens[0], *mapped.page_tokens.last().unwrap()] {
+            assert!(mapped.tiff_tree[page].data.get_tag(C2PA_TAG).is_some());
+        }
+
+        let mut removed = Cursor::new(Vec::new());
+        tiff_io.remove_c2pa(&mut resigned, &mut removed).unwrap();
+
+        assert_eq!(map_tiff(&mut removed).unwrap().page_tokens.len(), pages);
+        for s in [&store, &store_b] {
+            assert!(!removed
+                .get_ref()
+                .windows(s.len())
+                .any(|w| w == s.as_slice()));
+        }
+        assert!(matches!(
+            tiff_io.read_c2pa(&mut removed),
+            Err(Error::JumbfNotFound)
+        ));
     }
 
     #[test]

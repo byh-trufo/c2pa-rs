@@ -402,6 +402,7 @@ pub mod tests {
         let result = load_jumbf_from_stream(asset_type, &mut removed);
         if asset_type != "mp3" {
             assert!(matches!(&result.err().unwrap(), Error::JumbfNotFound));
+            assert!(!removed.get_ref().windows(jumbf.len()).any(|w| w == jumbf));
         }
         //assert!(matches!(result.err().unwrap(), Error::JumbfNotFound));
     }
