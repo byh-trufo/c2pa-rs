@@ -124,7 +124,7 @@ fn get_height_and_width(chunk_contents: &[ChunkContents]) -> Result<(u16, u16)> 
 fn inject_c2pa<T>(
     chunk: &Chunk,
     stream: &mut T,
-    data: &[u8],
+    data: Option<&[u8]>,
     xmp_data: Option<&[u8]>,
     format: &str,
     depth: usize,
@@ -152,7 +152,7 @@ where
 
         let mut children_contents: Vec<ChunkContents> = Vec::new();
 
-        if is_riff_chunk && !data.is_empty() {
+        if is_riff_chunk && data.is_some() {
             // remove c2pa manifest store in RIFF chunk
             children.retain(|c| c.id() != C2PA_CHUNK_ID);
         }
@@ -234,8 +234,10 @@ where
         }
 
         // place at the end for maximum compatibility
-        if is_riff_chunk && !data.is_empty() {
-            children_contents.push(ChunkContents::Data(C2PA_CHUNK_ID, data.to_vec()));
+        if let Some(data) = data {
+            if is_riff_chunk && !data.is_empty() {
+                children_contents.push(ChunkContents::Data(C2PA_CHUNK_ID, data.to_vec()));
+            }
         }
 
         Ok(ChunkContents::Children(id, chunk_type, children_contents))
@@ -417,7 +419,7 @@ impl C2paWriter for RiffIO {
         let new_contents = inject_c2pa(
             &top_level_chunks,
             &mut input_stream,
-            store_bytes,
+            Some(store_bytes),
             None,
             &self.riff_format,
             0,
@@ -578,7 +580,7 @@ impl WriteXmp for RiffIO {
         let new_contents = inject_c2pa(
             &top_level_chunks,
             &mut input_stream,
-            &[],
+            None,
             Some(new_xmp.as_bytes()),
             &self.riff_format,
             0,
