@@ -1,3 +1,5 @@
+// Copyright 2026 Trufo, Inc. All rights reserved.
+// Adapted and extended by Trufo, Inc. from c2pa-rs code:
 // Copyright 2026 Adobe. All rights reserved.
 // This file is licensed to you under the Apache License,
 // Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
