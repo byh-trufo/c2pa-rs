@@ -83,6 +83,8 @@ use crate::{
 const BUILD_HASH_ALG: &str = "sha256";
 const BUILD_VER_SUPPORT: usize = 2;
 
+mod multi_asset;
+
 /// JSON structure representing an Assertion reference in a Claim's "assertions" list.
 use HashedUri as C2PAAssertion;
 
@@ -2971,6 +2973,7 @@ impl Claim {
                 .failure(validation_log, Error::UpdateManifestInvalid)?;
             }
 
+            let may_fallback = hash_assertions.len() == 1 && !claim.update_manifest();
             // while this is a vec the spec only expects one at the moment and is checked above
             for hash_binding_assertion in hash_assertions {
                 if hash_binding_assertion
@@ -3090,6 +3093,24 @@ impl Claim {
                                 continue;
                             }
                             Err(e) => {
+                                if may_fallback
+                                    && matches!(e, Error::HashMismatch(_))
+                                    && dh.exclusions.as_ref().is_none_or(|ranges| {
+                                        data_hash_exclusions_match_manifest(
+                                            ranges,
+                                            svi.manifest_store_range.as_ref(),
+                                            svi.is_embedded,
+                                        )
+                                    })
+                                    && claim.verify_multi_asset_hash(
+                                        asset_data,
+                                        svi,
+                                        validation_log,
+                                        context,
+                                    )?
+                                {
+                                    continue;
+                                }
                                 log_item!(
                                     claim.assertion_uri(&hash_binding_assertion.label()),
                                     format!("asset hash error, name: {name}, error: {e}"),
@@ -3209,6 +3230,17 @@ impl Claim {
                             continue;
                         }
                         Err(e) => {
+                            if may_fallback
+                                && matches!(e, Error::HashMismatch(_))
+                                && claim.verify_multi_asset_hash(
+                                    asset_data,
+                                    svi,
+                                    validation_log,
+                                    context,
+                                )?
+                            {
+                                continue;
+                            }
                             let err_str = Self::classify_hash_verification_error(
                                 &e,
                                 validation_status::ASSERTION_BMFFHASH_MALFORMED,
@@ -3319,6 +3351,17 @@ impl Claim {
                             continue;
                         }
                         Err(e) => {
+                            if may_fallback
+                                && matches!(e, Error::HashMismatch(_))
+                                && claim.verify_multi_asset_hash(
+                                    asset_data,
+                                    svi,
+                                    validation_log,
+                                    context,
+                                )?
+                            {
+                                continue;
+                            }
                             let err_str = Self::classify_hash_verification_error(
                                 &e,
                                 validation_status::ASSERTION_BOXESHASH_MALFORMED,

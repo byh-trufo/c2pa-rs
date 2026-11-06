@@ -780,6 +780,16 @@ pub mod validation_codes {
     /// Any corresponding URL should point to a C2PA assertion.
     pub const ASSERTION_DATAHASH_MATCH: &str = "assertion.dataHash.match";
 
+    /// All located parts match their authenticated hash assertions.
+    pub const ASSERTION_MULTI_ASSET_HASH_MATCH: &str = "assertion.multiAssetHash.match";
+    /// The multi-asset assertion, locators, references or byte coverage are invalid.
+    pub const ASSERTION_MULTI_ASSET_HASH_MALFORMED: &str = "assertion.multiAssetHash.malformed";
+    /// A required part cannot be located.
+    pub const ASSERTION_MULTI_ASSET_HASH_MISSING_PART: &str =
+        "assertion.multiAssetHash.missingPart";
+    /// A located part is truncated or does not match its hash.
+    pub const ASSERTION_MULTI_ASSET_HASH_MISMATCH: &str = "assertion.multiAssetHash.mismatch";
+
     /// Additional exclusions are present in the data hash assertion.
     ///
     /// Any corresponding URL should point to a C2PA assertion.
@@ -1494,6 +1504,7 @@ pub mod validation_codes {
             | TIMESTAMP_VALIDATED
             | ASSERTION_HASHEDURI_MATCH
             | ASSERTION_DATAHASH_MATCH
+            | ASSERTION_MULTI_ASSET_HASH_MATCH
             | ASSERTION_BMFFHASH_MATCH
             | ASSERTION_ACCESSIBLE
             | ASSERTION_BOXHASH_MATCH
