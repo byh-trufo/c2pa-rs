@@ -1,3 +1,5 @@
+// Copyright 2026 Trufo, Inc. All rights reserved.
+// Modifications by Trufo, Inc.
 // Copyright 2026 Adobe. All rights reserved.
 // This file is licensed to you under the Apache License,
 // Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
@@ -12,8 +14,6 @@
 // each license.
 
 use std::io::{Cursor, SeekFrom};
-
-use id3::Tag;
 
 use crate::{
     asset_handlers::id3_helper::{self, ID3V2Header},
@@ -107,17 +107,7 @@ impl C2paReader for FlacIO {
         input_stream.rewind()?;
 
         if let Some(h) = header {
-            let mut manifest: Option<Vec<u8>> = None;
-            if let Ok(tag) = Tag::read_from2(&mut *input_stream) {
-                for eo in tag.encapsulated_objects() {
-                    if id3_helper::is_c2pa_mime_type(&eo.mime_type) {
-                        match &manifest {
-                            Some(_) => return Err(Error::TooManyManifestStores),
-                            None => manifest = Some(eo.data.clone()),
-                        }
-                    }
-                }
-            }
+            let manifest = id3_helper::read_manifest_from_id3(input_stream)?;
             input_stream.seek(SeekFrom::Start(h.get_size() as u64))?;
             validate_flac_stream(input_stream)?;
             if let Some(m) = manifest {
@@ -384,8 +374,8 @@ mod tests {
     }
 
     #[test]
-    fn test_read_cai_too_many_manifest_stores() {
-        test_helpers::run_read_cai_too_many_manifest_stores(&FlacIO::new("flac"), MINIMAL_FLAC);
+    fn test_read_cai_geob_discovery() {
+        test_helpers::run_read_cai_geob_discovery(&FlacIO::new("flac"), MINIMAL_FLAC);
     }
 
     #[test]
