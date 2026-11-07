@@ -447,6 +447,21 @@ impl C2paWriter for SvgIO {
                 //add metadata & manifest case
                 loop {
                     match reader.read_event_into(&mut buf) {
+                        Ok(Event::Empty(mut e))
+                            if xml_path.is_empty() && e.name().as_ref() == SVG.as_bytes() =>
+                        {
+                            add_c2pa_namespace_if_missing(&mut e);
+                            let end = e.to_end().into_owned();
+                            writer
+                                .write_event(Event::Start(e))
+                                .map_err(|_e| Error::XmlWriteError)?;
+                            writer
+                                .write_event(create_manifest_tag(store_bytes, true)?)
+                                .map_err(|_e| Error::XmlWriteError)?;
+                            writer
+                                .write_event(Event::End(end))
+                                .map_err(|_e| Error::XmlWriteError)?;
+                        }
                         Ok(Event::Start(mut e)) => {
                             let name = String::from_utf8_lossy(e.name().into_inner()).into_owned();
                             xml_path.push(name);
@@ -868,27 +883,22 @@ pub mod tests {
     #[test]
     fn test_write_svg_no_meta() {
         let more_data = "some more test data".as_bytes();
-        let source = fixture_path("sample1.svg");
-
-        let mut success = false;
-        if let Ok(temp_dir) = tempdirectory() {
-            let output = temp_dir_path(&temp_dir, "sample1.svg");
-
-            if let Ok(_size) = std::fs::copy(source, &output) {
-                let svg_io = SvgIO::new("svg");
-
-                if let Ok(()) = svg_io.save_c2pa_store(&output, more_data) {
-                    let xml = std::fs::read_to_string(&output).unwrap();
-                    assert_c2pa_namespace_on_svg_root(&xml);
-                    assert_no_c2pa_namespace_on_manifest(&xml);
-                    if let Ok(read_test_data) = svg_io.read_cai_store(&output) {
-                        assert!(vec_compare(more_data, &read_test_data));
-                        success = true;
-                    }
-                }
-            }
+        let source = std::fs::read(fixture_path("sample1.svg")).unwrap();
+        let svg_io = SvgIO::new("svg");
+        for bytes in [
+            source.as_slice(),
+            br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#,
+        ] {
+            let mut input = Cursor::new(bytes);
+            let mut output = Cursor::new(Vec::new());
+            svg_io
+                .write_c2pa(&mut input, &mut output, more_data)
+                .unwrap();
+            let xml = std::str::from_utf8(output.get_ref()).unwrap();
+            assert_c2pa_namespace_on_svg_root(xml);
+            assert_no_c2pa_namespace_on_manifest(xml);
+            assert_eq!(svg_io.read_c2pa(&mut output).unwrap(), more_data);
         }
-        assert!(success)
     }
 
     #[test]
