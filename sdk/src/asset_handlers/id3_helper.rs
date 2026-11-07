@@ -1,3 +1,5 @@
+// Copyright 2026 Trufo, Inc. All rights reserved.
+// Modifications by Trufo, Inc.
 // Copyright 2026 Adobe. All rights reserved.
 // This file is licensed to you under the Apache License,
 // Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
@@ -18,7 +20,7 @@
 //! live here so each format handler only needs format-specific logic (header
 //! validation, FLAC stream verification, …).
 
-use std::io::{Cursor, SeekFrom};
+use std::io::{Cursor, Read, SeekFrom};
 
 use byteorder::{BigEndian, ReadBytesExt};
 use id3::{
@@ -88,6 +90,10 @@ impl ID3V2Header {
         self.tag_size + 10
     }
 
+    fn encode_tag_size(n: u32) -> u32 {
+        (n & 0x7f) | ((n & 0x3f80) << 1) | ((n & 0x1f_c000) << 2) | ((n & 0x0fe0_0000) << 3)
+    }
+
     fn decode_tag_size(n: u32) -> u32 {
         (n & 0xff) | ((n & 0xff00) >> 1) | ((n & 0xff0000) >> 2) | ((n & 0xff000000) >> 3)
     }
@@ -100,6 +106,110 @@ pub(crate) fn is_c2pa_mime_type(mime_type: &str) -> bool {
     mime_type == GEOB_FRAME_MIME_TYPE || mime_type == GEOB_FRAME_MIME_TYPE_DEPRECATED
 }
 
+/// Reads C2PA GEOB frames individually so duplicate descriptions cannot hide stores.
+pub(crate) fn read_manifest_from_id3(input: &mut dyn ReadSeek) -> Result<Option<Vec<u8>>> {
+    input.rewind()?;
+    let mut raw = [0u8; 10];
+    if input.read_exact(&mut raw).is_err() {
+        return Ok(None);
+    }
+    let Ok(Some(header)) = ID3V2Header::parse_from_bytes(&raw) else {
+        return Ok(None);
+    };
+    if u64::from(header.get_size()) > stream_len(input)? {
+        return Ok(None);
+    }
+    let version = header._version_major;
+    let mut remaining = u64::from(header.tag_size);
+    let mut body = input.take(remaining);
+    let mut frames: Box<dyn Read + '_> = if version < 4 && header._flags & 0x80 != 0 {
+        let mut bytes = Vec::new();
+        body.read_to_end(&mut bytes)?;
+        let mut after_ff = false;
+        bytes.retain(|byte| {
+            let keep = !(after_ff && *byte == 0);
+            after_ff = keep && *byte == 0xff;
+            keep
+        });
+        Box::new(Cursor::new(bytes))
+    } else {
+        Box::new(body)
+    };
+    if header._flags & 0x40 != 0 {
+        // v2.2 uses this bit for unsupported tag compression
+        if version == 2 {
+            return Ok(None);
+        }
+        let Ok(size) = frames.read_u32::<BigEndian>() else {
+            return Ok(None);
+        };
+        // v2.3 excludes the size field; v2.4 includes it and uses synchsafe sizes
+        let size = if version == 3 {
+            u64::from(size) + 4
+        } else {
+            u64::from(ID3V2Header::decode_tag_size(size))
+        };
+        let Some(left) = remaining
+            .checked_sub(size)
+            .filter(|_| size >= if version == 3 { 10 } else { 6 })
+        else {
+            return Ok(None);
+        };
+        if std::io::copy(&mut (&mut frames).take(size - 4), &mut std::io::sink())? != size - 4 {
+            return Ok(None);
+        }
+        remaining = left;
+    }
+
+    let header_len = if version == 2 { 6 } else { 10 };
+    let mut manifest = None;
+    while remaining >= header_len as u64 {
+        let mut raw = [0u8; 10];
+        if frames.read_exact(&mut raw[..header_len]).is_err() || raw[0] == 0 {
+            break;
+        }
+        let size = if version == 2 {
+            u32::from_be_bytes([0, raw[3], raw[4], raw[5]])
+        } else {
+            let size = u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]]);
+            if version == 3 {
+                size
+            } else {
+                ID3V2Header::decode_tag_size(size)
+            }
+        };
+        // check the declared size before the v2.3 decoder allocates a frame buffer
+        let Some(left) = remaining.checked_sub(header_len as u64 + u64::from(size)) else {
+            return Ok(None);
+        };
+        // one-frame tags preserve the dependency's decoding without description deduplication
+        let mut single = vec![b'I', b'D', b'3', version, 0, 0];
+        single.extend_from_slice(
+            &ID3V2Header::encode_tag_size(header_len as u32 + size).to_be_bytes(),
+        );
+        single.extend_from_slice(&raw[..header_len]);
+        let mut content = (&mut frames).take(u64::from(size));
+        content.read_to_end(&mut single)?;
+        if content.limit() != 0 {
+            return Ok(None);
+        }
+        let Ok(tag) = Tag::read_from2(Cursor::new(single)) else {
+            return Ok(None);
+        };
+        for object in tag
+            .encapsulated_objects()
+            .filter(|object| is_c2pa_mime_type(&object.mime_type))
+        {
+            if manifest.is_some() {
+                return Err(Error::TooManyManifestStores);
+            }
+            manifest = Some(object.data.clone());
+        }
+        remaining = left;
+    }
+    Ok(manifest)
+}
+
 /// Returns `(manifest_byte_offset, manifest_byte_length)` within the stream's
 /// ID3 tag, or `None` when no single C2PA manifest GEOB frame is found.
 pub(crate) fn get_manifest_pos(mut input_stream: &mut dyn ReadSeek) -> Result<Option<(u64, u32)>> {
@@ -107,21 +217,11 @@ pub(crate) fn get_manifest_pos(mut input_stream: &mut dyn ReadSeek) -> Result<Op
     let mut buf = [0u8; 10];
     input_stream.read_exact(&mut buf)?;
     let header = ID3V2Header::parse_from_bytes(&buf)?;
-    input_stream.rewind()?;
-
-    if let Ok(tag) = Tag::read_from2(&mut *input_stream) {
-        let mut manifests = Vec::new();
-        for eo in tag.encapsulated_objects() {
-            if is_c2pa_mime_type(&eo.mime_type) {
-                manifests.push(eo.data.clone());
-            }
-        }
-        if manifests.len() == 1 {
-            input_stream.rewind()?;
-            let tag_bytes = input_stream.read_to_vec(header.map_or(0, |h| h.get_size()) as u64)?;
-            if let Some(pos) = memmem::find(&tag_bytes, &manifests[0]) {
-                return Ok(Some((pos as u64, manifests[0].len() as u32)));
-            }
+    if let Ok(Some(manifest)) = read_manifest_from_id3(input_stream) {
+        input_stream.rewind()?;
+        let tag_bytes = input_stream.read_to_vec(header.map_or(0, |h| h.get_size()) as u64)?;
+        if let Some(pos) = memmem::find(&tag_bytes, &manifest) {
+            return Ok(Some((pos as u64, manifest.len() as u32)));
         }
     }
     Ok(None)
@@ -325,17 +425,6 @@ pub(crate) mod test_helpers {
         h
     }
 
-    /// Serialise `tag` using the `id3` crate then append `payload` verbatim.
-    ///
-    /// Used by both MP3 and FLAC tests to build in-memory streams for
-    /// testing ID3 frame parsing without needing real audio files.
-    pub(crate) fn id3_tag_with_payload(tag: Tag, payload: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        tag.write_to(&mut buf, Version::Id3v24).expect("write id3");
-        buf.extend_from_slice(payload);
-        buf
-    }
-
     // ── Shared ID3/CAI read_cai tests ────────────────────────────────────────
 
     /// Any bytes that are neither `"ID3"` nor a format-specific magic word must
@@ -363,44 +452,75 @@ pub(crate) mod test_helpers {
         }
     }
 
-    /// An ID3 tag containing two C2PA GEOB frames must cause `read_cai` to
-    /// return `TooManyManifestStores` (or `Ok` with one payload when the id3
-    /// crate deduplicates frames with the same ID).
-    ///
-    /// `audio_payload` is appended after the ID3 tag so format-specific stream
-    /// validation (e.g. the FLAC `fLaC` check) can be satisfied by the caller.
-    pub(crate) fn run_read_cai_too_many_manifest_stores(
-        handler: &dyn AssetIO,
-        audio_payload: &[u8],
-    ) {
-        let mut tag = Tag::new();
-        for data in [b"first".as_ref(), b"second".as_ref()] {
-            let geob = Frame::with_content(
-                "GEOB",
-                Content::EncapsulatedObject(EncapsulatedObject {
-                    mime_type: super::GEOB_FRAME_MIME_TYPE.to_string(),
-                    filename: super::GEOB_FRAME_FILE_NAME.to_string(),
-                    description: super::GEOB_FRAME_DESCRIPTION.to_string(),
-                    data: data.to_vec(),
-                }),
-            );
-            let _ = tag.add_frame(geob);
-        }
-        let buf = id3_tag_with_payload(tag, audio_payload);
-        let mut cursor = Cursor::new(buf);
-        match handler.get_reader().read_c2pa(&mut cursor) {
-            Err(Error::TooManyManifestStores) => {}
-            Ok(data) => {
-                assert!(
-                    data == b"first" || data == b"second",
-                    "if one GEOB returned, must be first or second; got {:?}",
-                    data
-                );
+    /// Counts original GEOB frames across versions, headers and description collisions.
+    pub(crate) fn run_read_cai_geob_discovery(handler: &dyn AssetIO, audio_payload: &[u8]) {
+        let first = &b"first\xff\xe0"[..];
+        let second = &b"second\xff\0"[..];
+        for version in [Version::Id3v22, Version::Id3v23, Version::Id3v24] {
+            for layout in ["plain", "unsynchronised", "extended"] {
+                if layout == "extended" && version == Version::Id3v22 {
+                    continue;
+                }
+                for (mime, description, data, expected) in [
+                    (super::GEOB_FRAME_MIME_TYPE, "same", second, None),
+                    (super::GEOB_FRAME_MIME_TYPE, "same", first, None),
+                    (super::GEOB_FRAME_MIME_TYPE, "different", second, None),
+                    (super::GEOB_FRAME_MIME_TYPE_DEPRECATED, "same", second, None),
+                    ("text/plain", "same", second, Some(first)),
+                    ("text/plain", "different", second, Some(first)),
+                ] {
+                    let mut body = Vec::new();
+                    for (mime, description, data) in [
+                        (super::GEOB_FRAME_MIME_TYPE, "same", first),
+                        (mime, description, data),
+                    ] {
+                        let frame = Frame::with_content(
+                            "GEOB",
+                            Content::EncapsulatedObject(EncapsulatedObject {
+                                mime_type: mime.to_owned(),
+                                filename: "c2pa".to_owned(),
+                                description: description.to_owned(),
+                                data: data.to_vec(),
+                            }),
+                        );
+                        let mut tag = Tag::new();
+                        tag.add_frame(frame);
+                        let mut encoded = Vec::new();
+                        id3::Encoder::new()
+                            .version(version)
+                            .unsynchronisation(layout == "unsynchronised")
+                            .encode(&tag, &mut encoded)
+                            .unwrap();
+                        // serialize one frame at a time so the test does not merge duplicates
+                        body.extend_from_slice(&encoded[10..]);
+                    }
+                    if layout == "extended" {
+                        let extension = if version == Version::Id3v23 {
+                            &b"\0\0\0\x06\0\0\0\0\0\0"[..]
+                        } else {
+                            &b"\0\0\0\x06\x01\0"[..]
+                        };
+                        body.splice(..0, extension.iter().copied());
+                    }
+                    let mut header = id3_header(version.minor(), body.len() as u32);
+                    header[5] = match layout {
+                        "unsynchronised" => 0x80,
+                        "extended" => 0x40,
+                        _ => 0,
+                    };
+                    let mut bytes = header.to_vec();
+                    bytes.extend_from_slice(&body);
+                    bytes.extend_from_slice(audio_payload);
+                    let result = handler.get_reader().read_c2pa(&mut Cursor::new(bytes));
+                    match expected {
+                        Some(data) => assert_eq!(result.unwrap(), data, "{version:?}/{layout}"),
+                        None => assert!(
+                            matches!(result, Err(Error::TooManyManifestStores)),
+                            "{version:?}/{layout}: {result:?}"
+                        ),
+                    }
+                }
             }
-            other => panic!(
-                "expected TooManyManifestStores or Ok(first|second), got {:?}",
-                other
-            ),
         }
     }
 
